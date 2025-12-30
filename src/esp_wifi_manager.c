@@ -101,6 +101,9 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
     if (g_wifi_mgr->config.retry_interval_ms == 0) {
         g_wifi_mgr->config.retry_interval_ms = CONFIG_WIFI_MGR_RETRY_INTERVAL_MS;
     }
+    if (g_wifi_mgr->config.retry_max_interval_ms == 0) {
+        g_wifi_mgr->config.retry_max_interval_ms = 60000;  // 60 seconds max backoff
+    }
     
     // Init NVS
     ret = wifi_mgr_nvs_init();
@@ -307,7 +310,8 @@ esp_err_t wifi_manager_deinit(void)
     // Stop task
     wifi_mgr_send_event(WM_INT_EVT_STOP);
     vTaskDelay(pdMS_TO_TICKS(100));
-    
+
+    wifi_mgr_mdns_deinit();
     wifi_mgr_http_deinit();
     esp_bus_unreg(WIFI_MODULE);
     
@@ -469,15 +473,25 @@ static void wifi_mgr_task(void *arg)
                     g_wifi_mgr->state = WIFI_STATE_DISCONNECTED;
                     xEventGroupClearBits(g_wifi_mgr->event_group, WIFI_CONNECTED_BIT);
                     xEventGroupSetBits(g_wifi_mgr->event_group, WIFI_FAIL_BIT);
-                    
+
                     // Emit esp_bus event
                     wifi_disconnected_t disc = {.reason = evt.data.disconnect.reason};
                     strncpy(disc.ssid, evt.data.disconnect.ssid, sizeof(disc.ssid) - 1);
                     esp_bus_emit(WIFI_MODULE, WIFI_MGR_EVT_DISCONNECTED, &disc, sizeof(disc));
-                    
+
                     // Auto reconnect if enabled and not in AP mode
                     if (g_wifi_mgr->config.auto_reconnect && !g_wifi_mgr->ap_active && !g_wifi_mgr->connecting) {
-                        vTaskDelay(pdMS_TO_TICKS(g_wifi_mgr->config.retry_interval_ms));
+                        // Exponential backoff for reconnect
+                        uint32_t base = g_wifi_mgr->config.retry_interval_ms;
+                        uint32_t max_delay = g_wifi_mgr->config.retry_max_interval_ms;
+                        uint32_t delay = base << g_wifi_mgr->retry_count;
+                        if (delay > max_delay || delay < base) delay = max_delay;
+
+                        ESP_LOGI(TAG, "Auto-reconnect in %lu ms (attempt %d)",
+                                 (unsigned long)delay, g_wifi_mgr->retry_count + 1);
+                        g_wifi_mgr->retry_count++;
+
+                        vTaskDelay(pdMS_TO_TICKS(delay));
                         if (!g_wifi_mgr->ap_active) {
                             wifi_mgr_start_connect_sequence();
                         }
@@ -488,7 +502,10 @@ static void wifi_mgr_task(void *arg)
                 case WM_INT_EVT_GOT_IP: {
                     xEventGroupSetBits(g_wifi_mgr->event_group, WIFI_CONNECTED_BIT);
                     xEventGroupClearBits(g_wifi_mgr->event_group, WIFI_FAIL_BIT);
-                    
+
+                    // Initialize mDNS if enabled
+                    wifi_mgr_mdns_init();
+
                     // Emit esp_bus events
                     wifi_connected_t conn = {0};
                     wifi_ap_record_t ap_info;
@@ -499,7 +516,7 @@ static void wifi_mgr_task(void *arg)
                     }
                     esp_bus_emit(WIFI_MODULE, WIFI_MGR_EVT_CONNECTED, &conn, sizeof(conn));
                     esp_bus_emit(WIFI_MODULE, WIFI_MGR_EVT_GOT_IP, &evt.data.got_ip.ip_info, sizeof(esp_netif_ip_info_t));
-                    
+
                     // Stop AP if configured and AP is active
                     if (g_wifi_mgr->config.stop_ap_on_connect && g_wifi_mgr->ap_active) {
                         ESP_LOGI(TAG, "Stopping AP after successful connection");
@@ -633,4 +650,27 @@ esp_err_t wifi_manager_get_status(wifi_status_t *status)
 httpd_handle_t wifi_manager_get_httpd(void)
 {
     return g_wifi_mgr ? g_wifi_mgr->httpd : NULL;
+}
+
+esp_err_t wifi_manager_factory_reset(void)
+{
+    if (!g_wifi_mgr) return ESP_ERR_INVALID_STATE;
+
+    ESP_LOGI(TAG, "Factory reset requested");
+
+    // Erase NVS data
+    esp_err_t ret = wifi_mgr_nvs_factory_reset();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    // Clear in-memory data
+    wifi_mgr_lock();
+    g_wifi_mgr->network_count = 0;
+    memset(g_wifi_mgr->networks, 0, sizeof(g_wifi_mgr->networks));
+    g_wifi_mgr->var_count = 0;
+    memset(g_wifi_mgr->vars, 0, sizeof(g_wifi_mgr->vars));
+    wifi_mgr_unlock();
+
+    return ESP_OK;
 }

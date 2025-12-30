@@ -42,11 +42,13 @@ menu "WiFi Manager"
         help
             Default IP address for SoftAP mode.
 
-    config WIFI_MGR_HOSTNAME
-        string "Default hostname"
-        default "esp32"
+    config WIFI_MGR_MDNS_HOSTNAME
+        string "Default mDNS hostname"
+        default "esp32-{id}"
         help
-            Default hostname for mDNS.
+            Default hostname for mDNS. Supports {id} placeholder which
+            will be replaced with last 3 bytes of MAC address.
+            Example: "esp32-{id}" becomes "esp32-AABBCC"
 
 endmenu
 

@@ -12,26 +12,31 @@
 
 static const char *TAG = "wifi_mgr_ap";
 
-// Helper: Expand {id} placeholder with MAC address suffix
-static void expand_ssid_template(const char *template, char *output, size_t output_size)
+/**
+ * @brief Expand {id} placeholder with MAC address suffix
+ * @param tmpl Template string (e.g., "ESP32-{id}")
+ * @param output Output buffer
+ * @param max_len Output buffer size
+ */
+void wifi_mgr_expand_template(const char *tmpl, char *output, size_t max_len)
 {
-    const char *placeholder = strstr(template, "{id}");
+    const char *placeholder = strstr(tmpl, "{id}");
     if (!placeholder) {
-        strncpy(output, template, output_size - 1);
-        output[output_size - 1] = '\0';
+        strncpy(output, tmpl, max_len - 1);
+        output[max_len - 1] = '\0';
         return;
     }
-    
-    // Get AP MAC address
+
+    // Get MAC address (use STA MAC for consistency)
     uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
-    
-    // Build SSID: prefix + MAC suffix (last 3 bytes = 6 hex chars)
-    size_t prefix_len = placeholder - template;
-    if (prefix_len >= output_size) prefix_len = output_size - 1;
-    
-    strncpy(output, template, prefix_len);
-    snprintf(output + prefix_len, output_size - prefix_len, "%02X%02X%02X%s",
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
+    // Build output: prefix + MAC suffix (last 3 bytes = 6 hex chars)
+    size_t prefix_len = placeholder - tmpl;
+    if (prefix_len >= max_len) prefix_len = max_len - 1;
+
+    strncpy(output, tmpl, prefix_len);
+    snprintf(output + prefix_len, max_len - prefix_len, "%02X%02X%02X%s",
              mac[3], mac[4], mac[5], placeholder + 4);
 }
 
@@ -50,7 +55,7 @@ esp_err_t wifi_manager_start_ap(const wifi_mgr_ap_config_t *config)
     
     // Expand SSID template (replace {id} with MAC suffix)
     char ssid_expanded[32];
-    expand_ssid_template(ap_cfg->ssid, ssid_expanded, sizeof(ssid_expanded));
+    wifi_mgr_expand_template(ap_cfg->ssid, ssid_expanded, sizeof(ssid_expanded));
     
     ESP_LOGI(TAG, "Starting AP: %s", ssid_expanded);
     
@@ -71,7 +76,10 @@ esp_err_t wifi_manager_start_ap(const wifi_mgr_ap_config_t *config)
     }
     
     esp_wifi_set_config(WIFI_IF_AP, &wifi_cfg);
-    
+
+    // Start DNS server for captive portal
+    wifi_mgr_dns_start();
+
     // Configure static IP
     if (ap_cfg->ip[0]) {
         esp_netif_dhcps_stop(g_wifi_mgr->ap_netif);
@@ -91,11 +99,15 @@ esp_err_t wifi_manager_start_ap(const wifi_mgr_ap_config_t *config)
 esp_err_t wifi_manager_stop_ap(void)
 {
     if (!g_wifi_mgr) return ESP_ERR_INVALID_STATE;
-    
+
     ESP_LOGI(TAG, "Stopping AP");
+
+    // Stop DNS server
+    wifi_mgr_dns_stop();
+
     g_wifi_mgr->ap_active = false;
     esp_wifi_set_mode(WIFI_MODE_STA);
-    
+
     return ESP_OK;
 }
 

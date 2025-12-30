@@ -6,6 +6,7 @@
 #include "esp_wifi_manager_priv.h"
 #include "esp_log.h"
 #include "cJSON.h"
+#include "mbedtls/base64.h"
 #include <string.h>
 
 static const char *TAG = "wifi_mgr_http";
@@ -14,25 +15,60 @@ static const char *TAG = "wifi_mgr_http";
 // Helper Functions
 // =============================================================================
 
+/**
+ * @brief Add CORS headers to response
+ */
+static void add_cors_headers(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+
+/**
+ * @brief Check HTTP Basic Auth
+ */
 static bool check_auth(httpd_req_t *req)
 {
     if (!g_wifi_mgr->config.http.enable_auth) {
         return true;
     }
-    
-    char auth_header[128] = {0};
+
+    char auth_header[256] = {0};
     if (httpd_req_get_hdr_value_str(req, "Authorization", auth_header, sizeof(auth_header)) != ESP_OK) {
         return false;
     }
-    
+
     // Basic auth: "Basic base64(user:pass)"
     if (strncmp(auth_header, "Basic ", 6) != 0) {
         return false;
     }
-    
-    // Simple check - in production, decode base64 and compare
-    // For now, just check if header exists
-    return strlen(auth_header) > 6;
+
+    // Decode Base64
+    unsigned char decoded[128];
+    size_t decoded_len = 0;
+    const char *b64_data = auth_header + 6;
+    size_t b64_len = strlen(b64_data);
+
+    int ret = mbedtls_base64_decode(decoded, sizeof(decoded) - 1, &decoded_len,
+                                     (const unsigned char *)b64_data, b64_len);
+    if (ret != 0 || decoded_len == 0) {
+        return false;
+    }
+    decoded[decoded_len] = '\0';
+
+    // Parse user:pass
+    char *colon = strchr((char *)decoded, ':');
+    if (!colon) {
+        return false;
+    }
+    *colon = '\0';
+    const char *username = (char *)decoded;
+    const char *password = colon + 1;
+
+    // Verify credentials
+    return (strcmp(username, g_wifi_mgr->auth_username) == 0 &&
+            strcmp(password, g_wifi_mgr->auth_password) == 0);
 }
 
 static esp_err_t send_json_response(httpd_req_t *req, cJSON *json)
@@ -42,7 +78,8 @@ static esp_err_t send_json_response(httpd_req_t *req, cJSON *json)
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
-    
+
+    add_cors_headers(req);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, str, strlen(str));
     free(str);
@@ -51,6 +88,7 @@ static esp_err_t send_json_response(httpd_req_t *req, cJSON *json)
 
 static esp_err_t send_ok(httpd_req_t *req)
 {
+    add_cors_headers(req);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
     return ESP_OK;
@@ -66,13 +104,24 @@ static esp_err_t send_error(httpd_req_t *req, int code, const char *msg)
         case 500: status = "500 Internal Server Error"; break;
         default:  status = "400 Bad Request"; break;
     }
+    add_cors_headers(req);
     httpd_resp_set_status(req, status);
     httpd_resp_set_type(req, "application/json");
-    
+
     char buf[128];
     snprintf(buf, sizeof(buf), "{\"error\":\"%s\"}", msg);
     httpd_resp_sendstr(req, buf);
     return ESP_FAIL;
+}
+
+/**
+ * @brief OPTIONS handler for CORS preflight
+ */
+static esp_err_t handler_options(httpd_req_t *req)
+{
+    add_cors_headers(req);
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
 }
 
 static cJSON *read_json_body(httpd_req_t *req)
@@ -573,7 +622,7 @@ static esp_err_t handler_delete_var(httpd_req_t *req)
     if (!check_auth(req)) {
         return send_error(req, 401, "Unauthorized");
     }
-    
+
     // Extract key from URI
     char key[32] = {0};
     const char *uri = req->uri;
@@ -581,17 +630,95 @@ static esp_err_t handler_delete_var(httpd_req_t *req)
     if (last_slash && strlen(last_slash) > 1) {
         strncpy(key, last_slash + 1, sizeof(key) - 1);
     }
-    
+
     if (!key[0]) {
         return send_error(req, 400, "Missing key");
     }
-    
+
     esp_err_t ret = wifi_manager_del_var(key);
     if (ret == ESP_ERR_NOT_FOUND) {
         return send_error(req, 404, "Not found");
     }
-    
+
     return send_ok(req);
+}
+
+// POST /factory_reset
+static esp_err_t handler_post_factory_reset(httpd_req_t *req)
+{
+    if (!check_auth(req)) {
+        return send_error(req, 401, "Unauthorized");
+    }
+
+    esp_err_t ret = wifi_manager_factory_reset();
+    if (ret != ESP_OK) {
+        return send_error(req, 500, "Reset failed");
+    }
+
+    return send_ok(req);
+}
+
+// =============================================================================
+// Captive Portal
+// =============================================================================
+
+// Captive portal detection paths
+static const char *captive_detect_paths[] = {
+    "/generate_204",        // Android
+    "/gen_204",             // Android alt
+    "/hotspot-detect.html", // iOS/macOS
+    "/library/test/success.html", // iOS
+    "/ncsi.txt",            // Windows
+    "/connecttest.txt",     // Windows
+    "/success.txt",         // Firefox
+    "/canonical.html",      // Firefox
+    NULL
+};
+
+/**
+ * @brief Captive portal redirect handler
+ */
+static esp_err_t handler_captive_redirect(httpd_req_t *req)
+{
+    // Check if this is an API request - let it pass through
+    const char *base = g_wifi_mgr->config.http.api_base_path;
+    if (!base) base = "/api/wifi";
+    if (strstr(req->uri, base) != NULL) {
+        return ESP_ERR_NOT_FOUND;  // Not handled, pass to other handlers
+    }
+
+    // Check for captive portal detection paths
+    bool is_detect_path = false;
+    for (int i = 0; captive_detect_paths[i] != NULL; i++) {
+        if (strcmp(req->uri, captive_detect_paths[i]) == 0) {
+            is_detect_path = true;
+            break;
+        }
+    }
+
+    // Get AP IP for redirect
+    char redirect_url[64];
+    if (g_wifi_mgr->ap_config.ip[0]) {
+        snprintf(redirect_url, sizeof(redirect_url), "http://%s/", g_wifi_mgr->ap_config.ip);
+    } else {
+        snprintf(redirect_url, sizeof(redirect_url), "http://192.168.4.1/");
+    }
+
+    add_cors_headers(req);
+
+    if (is_detect_path) {
+        // For detection paths, return 302 redirect
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", redirect_url);
+        httpd_resp_send(req, NULL, 0);
+    } else {
+        // For other paths, return simple redirect page
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", redirect_url);
+        httpd_resp_send(req, NULL, 0);
+    }
+
+    return ESP_OK;
 }
 
 // =============================================================================
@@ -611,6 +738,8 @@ static char uri_ap_start[64];
 static char uri_ap_stop[64];
 static char uri_vars[64];
 static char uri_vars_wildcard[64];
+static char uri_factory_reset[64];
+static char uri_options_wildcard[64];
 
 esp_err_t wifi_mgr_http_init(void)
 {
@@ -700,6 +829,23 @@ esp_err_t wifi_mgr_http_init(void)
     httpd_uri_t vars_del_uri = { .uri = uri_vars_wildcard, .method = HTTP_DELETE, .handler = handler_delete_var };
     httpd_register_uri_handler(g_wifi_mgr->httpd, &vars_put_uri);
     httpd_register_uri_handler(g_wifi_mgr->httpd, &vars_del_uri);
+
+    // Factory reset
+    snprintf(uri_factory_reset, sizeof(uri_factory_reset), "%s/factory_reset", base);
+    httpd_uri_t factory_reset_uri = { .uri = uri_factory_reset, .method = HTTP_POST, .handler = handler_post_factory_reset };
+    httpd_register_uri_handler(g_wifi_mgr->httpd, &factory_reset_uri);
+
+    // OPTIONS handler for CORS preflight (catch-all)
+    snprintf(uri_options_wildcard, sizeof(uri_options_wildcard), "%s/*", base);
+    httpd_uri_t options_uri = { .uri = uri_options_wildcard, .method = HTTP_OPTIONS, .handler = handler_options };
+    httpd_register_uri_handler(g_wifi_mgr->httpd, &options_uri);
+
+    // Captive portal redirect (catch-all, must be last)
+    if (g_wifi_mgr->config.enable_captive_portal) {
+        httpd_uri_t captive_uri = { .uri = "/*", .method = HTTP_GET, .handler = handler_captive_redirect };
+        httpd_register_uri_handler(g_wifi_mgr->httpd, &captive_uri);
+        ESP_LOGI(TAG, "Captive portal redirect enabled");
+    }
 
     ESP_LOGI(TAG, "HTTP handlers registered");
     return ESP_OK;

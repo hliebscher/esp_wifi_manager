@@ -6,6 +6,8 @@ idf_component_register(
         "src/esp_wifi_manager_bus.c"
         "src/esp_wifi_manager_nvs.c"
         "src/esp_wifi_manager_http.c"
+        "src/esp_wifi_manager_dns.c"
+        "src/esp_wifi_manager_mdns.c"
     INCLUDE_DIRS
         "include"
     PRIV_INCLUDE_DIRS
@@ -16,8 +18,10 @@ idf_component_register(
         nvs_flash
         esp_http_server
         esp_event
+        mdns
     PRIV_REQUIRES
         esp_bus
         json
+        mbedtls
 )
 

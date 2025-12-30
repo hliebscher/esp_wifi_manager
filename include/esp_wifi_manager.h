@@ -209,6 +209,9 @@ extern "C" {
 #define WIFI_ACTION_DEL_VAR         "del_var"   ///< Delete variable
 #define WIFI_ACTION_LIST_VARS       "list_vars" ///< List all variables
 
+// Actions - System
+#define WIFI_ACTION_FACTORY_RESET   "factory_reset" ///< Factory reset (erase all NVS data)
+
 // Events - Connection (prefix WIFI_MGR để tránh conflict với ESP-IDF)
 #define WIFI_MGR_EVT_CONNECTED        "connected"     ///< Đã kết nối (data: wifi_connected_t)
 #define WIFI_MGR_EVT_DISCONNECTED     "disconnected"  ///< Mất kết nối (data: wifi_disconnected_t)
@@ -381,7 +384,7 @@ typedef struct {
 
 /**
  * @brief HTTP interface configuration
- * 
+ *
  * Cấu hình HTTP REST API. Có thể dùng httpd có sẵn hoặc tạo mới.
  */
 typedef struct {
@@ -392,6 +395,17 @@ typedef struct {
     const char *auth_username;  ///< Auth username, default "admin"
     const char *auth_password;  ///< Auth password, default "admin"
 } wifi_mgr_http_config_t;
+
+/**
+ * @brief mDNS configuration
+ *
+ * Cấu hình mDNS service discovery. Hostname hỗ trợ template {id}.
+ */
+typedef struct {
+    bool enable;                ///< Enable mDNS
+    const char *hostname;       ///< Hostname template, e.g., "esp32-{id}", default from Kconfig
+    const char *instance_name;  ///< Instance name, default = hostname
+} wifi_mgr_mdns_config_t;
 
 /**
  * @brief Main WiFi Manager configuration
@@ -413,7 +427,8 @@ typedef struct {
     
     // Retry config
     uint8_t max_retry_per_network;      ///< Max retry per network, default 3
-    uint32_t retry_interval_ms;         ///< Retry interval (ms), default 5000
+    uint32_t retry_interval_ms;         ///< Initial retry interval (ms), default 5000
+    uint32_t retry_max_interval_ms;     ///< Max retry interval for exponential backoff (ms), default 60000
     bool auto_reconnect;                ///< Auto reconnect on disconnect, default true
     
     // SoftAP default config
@@ -424,6 +439,7 @@ typedef struct {
     
     // Interfaces
     wifi_mgr_http_config_t http;        ///< HTTP REST API config
+    wifi_mgr_mdns_config_t mdns;        ///< mDNS config
 } wifi_manager_config_t;
 
 // =============================================================================
@@ -704,15 +720,29 @@ esp_err_t wifi_manager_disconnect(void);
 
 /**
  * @brief Scan for available networks
- * 
+ *
  * Quét các mạng WiFi xung quanh. Blocking operation.
- * 
+ *
  * @param[out] results Output array
  * @param max_count Array size
  * @param[out] count Output actual count
  * @return ESP_OK on success, ESP_ERR_TIMEOUT if timeout
  */
 esp_err_t wifi_manager_scan(wifi_scan_result_t *results, size_t max_count, size_t *count);
+
+// =============================================================================
+// System API
+// =============================================================================
+
+/**
+ * @brief Factory reset
+ *
+ * Xóa toàn bộ dữ liệu NVS: networks, variables, AP config, auth credentials.
+ * Sau khi gọi, cần restart hoặc gọi wifi_manager_deinit() rồi init lại.
+ *
+ * @return ESP_OK on success
+ */
+esp_err_t wifi_manager_factory_reset(void);
 
 #ifdef __cplusplus
 }

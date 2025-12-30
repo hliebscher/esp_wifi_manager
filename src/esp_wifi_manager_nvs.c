@@ -250,24 +250,46 @@ esp_err_t wifi_mgr_nvs_save_auth(const char *username, const char *password)
 {
     nvs_handle_t handle;
     esp_err_t ret;
-    
+
     ret = nvs_open(WIFI_MGR_NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (ret != ESP_OK) return ret;
-    
+
     if (username) {
         ret = nvs_set_str(handle, NVS_KEY_AUTH_USER, username);
         if (ret != ESP_OK) goto cleanup;
     }
-    
+
     if (password) {
         ret = nvs_set_str(handle, NVS_KEY_AUTH_PASS, password);
         if (ret != ESP_OK) goto cleanup;
     }
-    
+
     ret = nvs_commit(handle);
-    
+
 cleanup:
     nvs_close(handle);
+    return ret;
+}
+
+// =============================================================================
+// Factory Reset
+// =============================================================================
+
+esp_err_t wifi_mgr_nvs_factory_reset(void)
+{
+    nvs_handle_t handle;
+    esp_err_t ret;
+
+    ret = nvs_open(WIFI_MGR_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (ret != ESP_OK) return ret;
+
+    ret = nvs_erase_all(handle);
+    if (ret == ESP_OK) {
+        ret = nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+    ESP_LOGI(TAG, "Factory reset: NVS namespace erased");
     return ret;
 }
 

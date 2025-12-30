@@ -31,6 +31,27 @@ static void sort_networks_by_priority(void)
     }
 }
 
+/**
+ * @brief Calculate exponential backoff delay
+ * @param retry Current retry number (0-based)
+ * @return Delay in milliseconds
+ */
+static uint32_t calc_backoff_delay(int retry)
+{
+    uint32_t base = g_wifi_mgr->config.retry_interval_ms;
+    uint32_t max_delay = g_wifi_mgr->config.retry_max_interval_ms;
+
+    // Exponential backoff: base * 2^retry
+    uint32_t delay = base << retry;  // base * 2^retry
+
+    // Cap at max delay
+    if (delay > max_delay || delay < base) {  // overflow check
+        delay = max_delay;
+    }
+
+    return delay;
+}
+
 void wifi_mgr_start_connect_sequence(void)
 {
     if (!g_wifi_mgr || g_wifi_mgr->network_count == 0) {
@@ -40,62 +61,65 @@ void wifi_mgr_start_connect_sequence(void)
         }
         return;
     }
-    
+
     wifi_mgr_lock();
     g_wifi_mgr->connecting = true;
     sort_networks_by_priority();
     wifi_mgr_unlock();
-    
+
     // Try each network (AP can run in parallel - AP+STA mode)
     for (size_t i = 0; i < g_wifi_mgr->network_count; i++) {
         wifi_network_t *net = &g_wifi_mgr->networks[i];
         ESP_LOGI(TAG, "Trying network: %s (priority: %d)", net->ssid, net->priority);
-        
+
         g_wifi_mgr->state = WIFI_STATE_CONNECTING;
         g_wifi_mgr->current_network_idx = i;
         esp_bus_emit(WIFI_MODULE, WIFI_MGR_EVT_CONNECTING, net->ssid, strlen(net->ssid) + 1);
-        
+
         wifi_config_t wifi_cfg = {0};
         strncpy((char *)wifi_cfg.sta.ssid, net->ssid, sizeof(wifi_cfg.sta.ssid) - 1);
         strncpy((char *)wifi_cfg.sta.password, net->password, sizeof(wifi_cfg.sta.password) - 1);
-        
+
         esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
-        
+
         for (int retry = 0; retry < g_wifi_mgr->config.max_retry_per_network; retry++) {
             xEventGroupClearBits(g_wifi_mgr->event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
-            
+
             esp_err_t err = esp_wifi_connect();
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(err));
                 continue;
             }
-            
+
             // Wait for connection result
             EventBits_t bits = xEventGroupWaitBits(g_wifi_mgr->event_group,
                                                    WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
                                                    pdFALSE, pdFALSE,
                                                    pdMS_TO_TICKS(15000));
-            
+
             if (bits & WIFI_CONNECTED_BIT) {
                 ESP_LOGI(TAG, "Connected to %s", net->ssid);
                 g_wifi_mgr->connecting = false;
+                g_wifi_mgr->retry_count = 0;  // Reset backoff counter on success
                 return;
             }
-            
-            ESP_LOGW(TAG, "Failed to connect to %s, retry %d/%d", 
+
+            ESP_LOGW(TAG, "Failed to connect to %s, retry %d/%d",
                      net->ssid, retry + 1, g_wifi_mgr->config.max_retry_per_network);
-            
+
             if (retry < g_wifi_mgr->config.max_retry_per_network - 1) {
-                vTaskDelay(pdMS_TO_TICKS(g_wifi_mgr->config.retry_interval_ms));
+                uint32_t delay = calc_backoff_delay(retry);
+                ESP_LOGI(TAG, "Backoff delay: %lu ms", (unsigned long)delay);
+                vTaskDelay(pdMS_TO_TICKS(delay));
             }
         }
     }
-    
+
     g_wifi_mgr->connecting = false;
-    
+
     ESP_LOGW(TAG, "Failed to connect to any network");
     g_wifi_mgr->state = WIFI_STATE_DISCONNECTED;
-    
+
     // Start captive portal if enabled and AP not already running
     if (g_wifi_mgr->config.enable_captive_portal && !g_wifi_mgr->ap_active) {
         ESP_LOGI(TAG, "Starting captive portal");

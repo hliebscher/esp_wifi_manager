@@ -148,6 +148,7 @@ esp_err_t wifi_mgr_nvs_load_ap_config(wifi_mgr_ap_config_t *config);
 esp_err_t wifi_mgr_nvs_save_ap_config(const wifi_mgr_ap_config_t *config);
 esp_err_t wifi_mgr_nvs_load_auth(char *username, size_t ulen, char *password, size_t plen);
 esp_err_t wifi_mgr_nvs_save_auth(const char *username, const char *password);
+esp_err_t wifi_mgr_nvs_factory_reset(void);
 
 // =============================================================================
 // HTTP Functions (esp_wifi_manager_http.c)
@@ -179,6 +180,27 @@ esp_err_t wifi_mgr_bus_handler(const char *action,
                                const void *req_data, size_t req_len,
                                void *res_buf, size_t res_buf_size, size_t *res_len,
                                void *ctx);
+
+// =============================================================================
+// DNS Server (esp_wifi_manager_dns.c) - Captive Portal
+// =============================================================================
+
+esp_err_t wifi_mgr_dns_start(void);
+esp_err_t wifi_mgr_dns_stop(void);
+
+// =============================================================================
+// AP Functions (esp_wifi_manager_ap.c)
+// =============================================================================
+
+void wifi_mgr_expand_template(const char *tmpl, char *output, size_t max_len);
+
+// =============================================================================
+// mDNS Functions (esp_wifi_manager_mdns.c)
+// =============================================================================
+
+esp_err_t wifi_mgr_mdns_init(void);
+esp_err_t wifi_mgr_mdns_deinit(void);
+const char *wifi_mgr_mdns_get_hostname(void);
 
 // =============================================================================
 // Utility Functions

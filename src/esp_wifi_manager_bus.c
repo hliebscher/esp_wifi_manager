@@ -134,7 +134,12 @@ esp_err_t wifi_mgr_bus_handler(const char *action,
         if (!req_data) return ESP_ERR_INVALID_ARG;
         return wifi_manager_del_var((const char *)req_data);
     }
-    
+
+    // Factory reset
+    if (strcmp(action, WIFI_ACTION_FACTORY_RESET) == 0) {
+        return wifi_manager_factory_reset();
+    }
+
     return ESP_ERR_NOT_SUPPORTED;
 }
 
