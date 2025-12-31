@@ -74,10 +74,10 @@ menu "WiFi Manager"
         default ""
         depends on WIFI_MGR_ENABLE_WEBUI
         help
-            Optional path to custom Web UI files on SPIFFS/LittleFS.
+            Optional path to custom Web UI files on LittleFS/SPIFFS.
             If set, files from this path will be served instead of
             embedded defaults. Leave empty to use embedded Web UI.
-            Example: "/spiffs/www"
+            Example: "/littlefs" or "/spiffs"
 
 endmenu
 
