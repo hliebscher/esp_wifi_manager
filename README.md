@@ -3,7 +3,7 @@
 [![Component Registry](https://components.espressif.com/components/tuanpmt/esp_wifi_manager/badge.svg)](https://components.espressif.com/components/tuanpmt/esp_wifi_manager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-WiFi Manager component for ESP-IDF with multi-network support, auto-reconnect, SoftAP captive portal, Web UI, CLI, and REST API.
+WiFi Manager component for ESP-IDF with multi-network support, auto-reconnect, SoftAP captive portal, Web UI, CLI, BLE, and REST API.
 
 ## Features
 
@@ -12,6 +12,7 @@ WiFi Manager component for ESP-IDF with multi-network support, auto-reconnect, S
 - **SoftAP mode**: Captive portal for initial configuration (triggers OS popup)
 - **Web UI**: Embedded responsive web interface (Preact-based, ~10KB gzipped)
 - **CLI interface**: Serial console commands for configuration
+- **BLE GATT**: Configure WiFi via Bluetooth Low Energy (smartphone or Python CLI)
 - **REST API**: HTTP endpoints for remote configuration with CORS support
 - **Basic Auth**: Optional authentication for HTTP endpoints
 - **mDNS**: Access device via hostname (e.g., `esp32-abc123.local`)
@@ -35,12 +36,12 @@ WiFi Manager component for ESP-IDF with multi-network support, auto-reconnect, S
 │                                                                      │
 │  ┌─────────────── Configuration Interfaces ───────────────────────┐  │
 │  │                                                                │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │  │
-│  │  │  Web UI  │  │   HTTP   │  │   CLI    │  │   mDNS   │       │  │
-│  │  │ (Preact) │  │   API    │  │ (Console)│  │          │       │  │
-│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │  │
-│  │       │              │             │             │            │  │
-│  │       └──────────────┴─────────────┴─────────────┘            │  │
+│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐       │  │
+│  │  │ Web UI │ │  HTTP  │ │  CLI   │ │  BLE   │ │  mDNS  │       │  │
+│  │  │(Preact)│ │  API   │ │(Console│ │  GATT  │ │        │       │  │
+│  │  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘       │  │
+│  │       │          │          │          │          │           │  │
+│  │       └──────────┴──────────┴──────────┴──────────┘           │  │
 │  │                              │                                │  │
 │  │                              ▼                                │  │
 │  │                 ┌─────────────────────────┐                   │  │
@@ -128,6 +129,7 @@ void app_main(void)
 | [with_cli](examples/with_cli/) | CLI interface with ESP Console REPL |
 | [with_webui](examples/with_webui/) | Embedded Web UI (no external files needed) |
 | [with_webui_customize](examples/with_webui_customize/) | Custom frontend from LittleFS |
+| [with_ble](examples/with_ble/) | BLE GATT interface for smartphone/Python CLI |
 
 ## Configuration
 
@@ -148,6 +150,8 @@ Configure via `idf.py menuconfig` → WiFi Manager:
 | `WIFI_MGR_ENABLE_CLI` | n | Enable CLI interface |
 | `WIFI_MGR_ENABLE_WEBUI` | n | Enable embedded Web UI |
 | `WIFI_MGR_WEBUI_CUSTOM_PATH` | "" | Custom Web UI path (LittleFS/SPIFFS) |
+| `WIFI_MGR_ENABLE_BLE` | n | Enable BLE GATT interface |
+| `WIFI_MGR_BLE_DEVICE_NAME` | "ESP32-WiFi-{id}" | BLE device name (supports {id}) |
 
 ### Runtime Configuration
 
@@ -192,6 +196,12 @@ wifi_manager_config_t config = {
     .mdns = {
         .enable = true,
         .hostname = "esp32-{id}",
+    },
+
+    // BLE GATT (requires CONFIG_WIFI_MGR_ENABLE_BLE=y)
+    .ble = {
+        .enable = true,
+        .device_name = "ESP32-WiFi-{id}",  // NULL uses Kconfig default
     },
 };
 
@@ -275,6 +285,67 @@ Enable with `CONFIG_WIFI_MGR_ENABLE_CLI=y`:
 | `wifi reset` | Factory reset |
 | `wifi var get <key>` | Get variable |
 | `wifi var set <key> <value>` | Set variable |
+
+## BLE GATT Interface
+
+Enable with `CONFIG_WIFI_MGR_ENABLE_BLE=y`. Requires Bluetooth enabled in sdkconfig:
+
+```kconfig
+CONFIG_BT_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=y
+```
+
+### Service & Characteristics
+
+| UUID | Name | Properties | Description |
+|------|------|------------|-------------|
+| 0xFFE0 | WiFi Service | - | Main service |
+| 0xFFE1 | Status | Read, Notify | Current WiFi status (JSON) |
+| 0xFFE2 | Command | Write | Send JSON command |
+| 0xFFE3 | Response | Notify | Command response (JSON) |
+
+### Commands
+
+Send JSON to Command characteristic (0xFFE2):
+
+```json
+{"cmd": "get_status"}
+{"cmd": "scan"}
+{"cmd": "list_networks"}
+{"cmd": "add_network", "ssid": "MyWiFi", "pass": "secret", "prio": 10}
+{"cmd": "del_network", "ssid": "MyWiFi"}
+{"cmd": "connect"}
+{"cmd": "connect", "ssid": "MyWiFi"}
+{"cmd": "disconnect"}
+{"cmd": "get_ap_status"}
+{"cmd": "start_ap"}
+{"cmd": "stop_ap"}
+{"cmd": "get_var", "key": "device_name"}
+{"cmd": "set_var", "key": "device_name", "val": "My ESP32"}
+{"cmd": "factory_reset"}
+```
+
+### Python CLI Client
+
+```bash
+cd tools/wifi_ble_cli
+pip install -r requirements.txt
+
+# Scan for devices
+python wifi_ble_cli.py devices
+
+# Get status
+python wifi_ble_cli.py status
+
+# Add network
+python wifi_ble_cli.py add "MyWiFi" "password123"
+
+# Scan networks
+python wifi_ble_cli.py scan
+
+# Connect
+python wifi_ble_cli.py connect
+```
 
 ## REST API Reference
 

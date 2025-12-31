@@ -285,6 +285,16 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
     }
 #endif
 
+    // Init BLE if enabled
+#ifdef CONFIG_WIFI_MGR_ENABLE_BLE
+    if (config && config->ble.enable) {
+        ret = wifi_mgr_ble_init();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "BLE init failed: %s", esp_err_to_name(ret));
+        }
+    }
+#endif
+
     g_wifi_mgr->initialized = true;
     g_wifi_mgr->state = WIFI_STATE_DISCONNECTED;
 
@@ -319,6 +329,9 @@ esp_err_t wifi_manager_deinit(void)
     wifi_mgr_send_event(WM_INT_EVT_STOP);
     vTaskDelay(pdMS_TO_TICKS(100));
 
+#ifdef CONFIG_WIFI_MGR_ENABLE_BLE
+    wifi_mgr_ble_deinit();
+#endif
     wifi_mgr_mdns_deinit();
     wifi_mgr_http_deinit();
     esp_bus_unreg(WIFI_MODULE);

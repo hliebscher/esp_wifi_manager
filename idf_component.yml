@@ -1,4 +1,4 @@
-version: "1.0.0"
+version: "1.1.0"
 description: WiFi Manager component with multi-network support, auto-reconnect, SoftAP captive portal, and REST API configuration
 url: https://github.com/tuanpmt/esp_wifi_manager
 repository: https://github.com/tuanpmt/esp_wifi_manager.git

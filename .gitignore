@@ -148,3 +148,5 @@ frontend/dist/assets/*
 # Node modules
 frontend/node_modules/
 dependencies.lock
+dist/*
+venv

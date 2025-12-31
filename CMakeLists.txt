@@ -51,3 +51,12 @@ idf_component_register(
     EMBED_FILES ${EMBED_FILES}
 )
 
+# Add BLE support after component registration
+# This ensures Kconfig variables are properly resolved
+if(CONFIG_BT_ENABLED AND CONFIG_WIFI_MGR_ENABLE_BLE)
+    idf_component_get_property(lib ${COMPONENT_NAME} COMPONENT_LIB)
+    target_sources(${lib} PRIVATE "src/esp_wifi_manager_ble.c")
+    idf_component_get_property(bt_lib bt COMPONENT_LIB)
+    target_link_libraries(${lib} PRIVATE ${bt_lib})
+endif()
+

@@ -408,6 +408,16 @@ typedef struct {
 } wifi_mgr_mdns_config_t;
 
 /**
+ * @brief BLE configuration
+ *
+ * Cấu hình BLE GATT interface. Device name hỗ trợ template {id}.
+ */
+typedef struct {
+    bool enable;                ///< Enable BLE interface
+    const char *device_name;    ///< BLE device name, e.g., "ESP32-WiFi-{id}", default from Kconfig
+} wifi_mgr_ble_config_t;
+
+/**
  * @brief Main WiFi Manager configuration
  * 
  * Cấu hình khởi tạo WiFi Manager. Tất cả fields đều optional.
@@ -440,6 +450,7 @@ typedef struct {
     // Interfaces
     wifi_mgr_http_config_t http;        ///< HTTP REST API config
     wifi_mgr_mdns_config_t mdns;        ///< mDNS config
+    wifi_mgr_ble_config_t ble;          ///< BLE GATT config
 } wifi_manager_config_t;
 
 // =============================================================================

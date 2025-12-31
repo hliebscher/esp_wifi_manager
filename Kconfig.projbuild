@@ -79,5 +79,22 @@ menu "WiFi Manager"
             embedded defaults. Leave empty to use embedded Web UI.
             Example: "/littlefs" or "/spiffs"
 
+    config WIFI_MGR_ENABLE_BLE
+        bool "Enable BLE interface"
+        default n
+        depends on BT_ENABLED && BT_BLUEDROID_ENABLED
+        help
+            Enable Bluetooth Low Energy interface for WiFi configuration.
+            Allows configuration via BLE GATT from mobile apps or CLI tools.
+            Requires Bluetooth to be enabled in menuconfig.
+
+    config WIFI_MGR_BLE_DEVICE_NAME
+        string "BLE device name"
+        default "ESP32-WiFi-{id}"
+        depends on WIFI_MGR_ENABLE_BLE
+        help
+            BLE advertising name. Supports {id} placeholder which
+            will be replaced with last 3 bytes of MAC address.
+
 endmenu
 
