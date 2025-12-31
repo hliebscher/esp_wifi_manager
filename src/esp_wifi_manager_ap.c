@@ -58,8 +58,13 @@ esp_err_t wifi_manager_start_ap(const wifi_mgr_ap_config_t *config)
     wifi_mgr_expand_template(ap_cfg->ssid, ssid_expanded, sizeof(ssid_expanded));
     
     ESP_LOGI(TAG, "Starting AP: %s", ssid_expanded);
-    
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
+
+    // Only change mode if not already in APSTA
+    wifi_mode_t current_mode;
+    esp_wifi_get_mode(&current_mode);
+    if (current_mode != WIFI_MODE_APSTA) {
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
+    }
     
     wifi_config_t wifi_cfg = {
         .ap = {
