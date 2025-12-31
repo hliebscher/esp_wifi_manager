@@ -740,26 +740,10 @@ static const char *captive_detect_paths[] = {
 };
 
 /**
- * @brief Captive portal redirect handler
+ * @brief Captive portal detection handler - triggers OS popup
  */
-static esp_err_t handler_captive_redirect(httpd_req_t *req)
+static esp_err_t handler_captive_detect(httpd_req_t *req)
 {
-    // Check if this is an API request - let it pass through
-    const char *base = g_wifi_mgr->config.http.api_base_path;
-    if (!base) base = "/api/wifi";
-    if (strstr(req->uri, base) != NULL) {
-        return ESP_ERR_NOT_FOUND;  // Not handled, pass to other handlers
-    }
-
-    // Check for captive portal detection paths
-    bool is_detect_path = false;
-    for (int i = 0; captive_detect_paths[i] != NULL; i++) {
-        if (strcmp(req->uri, captive_detect_paths[i]) == 0) {
-            is_detect_path = true;
-            break;
-        }
-    }
-
     // Get AP IP for redirect
     char redirect_url[64];
     if (g_wifi_mgr->ap_config.ip[0]) {
@@ -770,18 +754,12 @@ static esp_err_t handler_captive_redirect(httpd_req_t *req)
 
     add_cors_headers(req);
 
-    if (is_detect_path) {
-        // For detection paths, return 302 redirect
-        httpd_resp_set_status(req, "302 Found");
-        httpd_resp_set_hdr(req, "Location", redirect_url);
-        httpd_resp_send(req, NULL, 0);
-    } else {
-        // For other paths, return simple redirect page
-        httpd_resp_set_status(req, "302 Found");
-        httpd_resp_set_hdr(req, "Location", redirect_url);
-        httpd_resp_send(req, NULL, 0);
-    }
+    // Return 302 redirect to trigger captive portal popup
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", redirect_url);
+    httpd_resp_send(req, NULL, 0);
 
+    ESP_LOGD(TAG, "Captive detect: %s -> %s", req->uri, redirect_url);
     return ESP_OK;
 }
 
@@ -914,11 +892,17 @@ esp_err_t wifi_mgr_http_init(void)
     ESP_LOGI(TAG, "Simple setup page registered at /");
 #endif
 
-    // Captive portal redirect (catch-all, must be last)
+    // Captive portal detection handlers (for specific OS detection paths)
     if (g_wifi_mgr->config.enable_captive_portal) {
-        httpd_uri_t captive_uri = { .uri = "/*", .method = HTTP_GET, .handler = handler_captive_redirect };
-        httpd_register_uri_handler(g_wifi_mgr->httpd, &captive_uri);
-        ESP_LOGI(TAG, "Captive portal redirect enabled");
+        for (int i = 0; captive_detect_paths[i] != NULL; i++) {
+            httpd_uri_t captive_uri = {
+                .uri = captive_detect_paths[i],
+                .method = HTTP_GET,
+                .handler = handler_captive_detect
+            };
+            httpd_register_uri_handler(g_wifi_mgr->httpd, &captive_uri);
+        }
+        ESP_LOGI(TAG, "Captive portal detection enabled");
     }
 
     ESP_LOGI(TAG, "HTTP handlers registered");
