@@ -796,7 +796,7 @@ esp_err_t wifi_mgr_http_init(void)
     if (!g_wifi_mgr->httpd) {
         httpd_config_t config = HTTPD_DEFAULT_CONFIG();
         config.uri_match_fn = httpd_uri_match_wildcard;
-        config.max_uri_handlers = 20;
+        config.max_uri_handlers = 32;  // API(18) + WebUI(3) + Captive(8) + reserve
 
         esp_err_t ret = httpd_start(&g_wifi_mgr->httpd, &config);
         if (ret != ESP_OK) {

@@ -134,6 +134,17 @@ sdkconfig
 sdkconfig.old
 managed_components/
 ref/
-dist/
 CLAUDE.md
 docs/dev/*
+
+# Frontend build output - ignore all except embedded files
+frontend/dist/*
+!frontend/dist/index.html
+!frontend/dist/assets
+frontend/dist/assets/*
+!frontend/dist/assets/app.js.gz
+!frontend/dist/assets/index.css.gz
+
+# Node modules
+frontend/node_modules/
+dependencies.lock

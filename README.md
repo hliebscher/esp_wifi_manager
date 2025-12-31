@@ -3,14 +3,18 @@
 [![Component Registry](https://components.espressif.com/components/tuanpmt/esp_wifi_manager/badge.svg)](https://components.espressif.com/components/tuanpmt/esp_wifi_manager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-WiFi Manager component for ESP-IDF with multi-network support, auto-reconnect, SoftAP captive portal, and REST API configuration.
+WiFi Manager component for ESP-IDF with multi-network support, auto-reconnect, SoftAP captive portal, Web UI, CLI, and REST API.
 
 ## Features
 
 - **Multi-network support**: Save multiple WiFi networks with priority-based auto-connect
-- **Auto-reconnect**: Automatic retry and failover between saved networks
-- **SoftAP mode**: Captive portal for initial configuration
-- **REST API**: HTTP endpoints for remote configuration
+- **Auto-reconnect**: Automatic retry with exponential backoff and failover between saved networks
+- **SoftAP mode**: Captive portal for initial configuration (triggers OS popup)
+- **Web UI**: Embedded responsive web interface (Preact-based, ~10KB gzipped)
+- **CLI interface**: Serial console commands for configuration
+- **REST API**: HTTP endpoints for remote configuration with CORS support
+- **Basic Auth**: Optional authentication for HTTP endpoints
+- **mDNS**: Access device via hostname (e.g., `esp32-abc123.local`)
 - **Custom variables**: Key-value storage for application settings
 - **NVS persistence**: Networks, variables, and AP config stored in flash
 - **esp_bus integration**: Event-driven architecture with actions and events
@@ -24,25 +28,24 @@ WiFi Manager component for ESP-IDF with multi-network support, auto-reconnect, S
 │  │  WiFi Core                    │  NVS Storage                   │  │
 │  │  ─────────                    │  ───────────                   │  │
 │  │  • Multi-network              │  • Saved networks              │  │
-│  │  • Auto retry                 │  • Interface credentials       │  │
-│  │  • Reconnect logic            │                                │  │
-│  │  • Captive portal             │                                │  │
+│  │  • Auto retry + backoff       │  • AP configuration            │  │
+│  │  • Reconnect logic            │  • Custom variables            │  │
+│  │  • Captive portal + DNS       │                                │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 │                                                                      │
 │  ┌─────────────── Configuration Interfaces ───────────────────────┐  │
 │  │                                                                │  │
 │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │  │
-│  │  │   HTTP   │  │   BLE    │  │   CLI    │  │   ...    │       │  │
-│  │  │  Server  │  │ (future) │  │ (future) │  │          │       │  │
+│  │  │  Web UI  │  │   HTTP   │  │   CLI    │  │   mDNS   │       │  │
+│  │  │ (Preact) │  │   API    │  │ (Console)│  │          │       │  │
 │  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │  │
-│  │       │              │             │                          │  │
-│  │       └──────────────┴─────────────┴──────────┐               │  │
-│  │                                               ▼               │  │
-│  │                              ┌─────────────────────────┐      │  │
-│  │                              │  Interface Handler API  │      │  │
-│  │                              │  (get_status, scan,     │      │  │
-│  │                              │   add_network, ...)     │      │  │
-│  │                              └─────────────────────────┘      │  │
+│  │       │              │             │             │            │  │
+│  │       └──────────────┴─────────────┴─────────────┘            │  │
+│  │                              │                                │  │
+│  │                              ▼                                │  │
+│  │                 ┌─────────────────────────┐                   │  │
+│  │                 │  WiFi Manager Core API  │                   │  │
+│  │                 └─────────────────────────┘                   │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────┘
          │                              │
@@ -117,6 +120,15 @@ void app_main(void)
 }
 ```
 
+## Examples
+
+| Example | Description |
+|---------|-------------|
+| [basic](examples/basic/) | Minimal setup with default configuration |
+| [with_cli](examples/with_cli/) | CLI interface with ESP Console REPL |
+| [with_webui](examples/with_webui/) | Embedded Web UI (no external files needed) |
+| [with_webui_customize](examples/with_webui_customize/) | Custom frontend from LittleFS |
+
 ## Configuration
 
 ### Kconfig Options
@@ -128,10 +140,14 @@ Configure via `idf.py menuconfig` → WiFi Manager:
 | `WIFI_MGR_MAX_NETWORKS` | 5 | Maximum saved networks |
 | `WIFI_MGR_MAX_VARS` | 10 | Maximum custom variables |
 | `WIFI_MGR_DEFAULT_RETRY` | 3 | Retries per network |
-| `WIFI_MGR_RETRY_INTERVAL_MS` | 5000 | Retry interval (ms) |
+| `WIFI_MGR_RETRY_INTERVAL_MS` | 5000 | Base retry interval (ms) |
 | `WIFI_MGR_AP_SSID` | "ESP32-Config" | Default AP SSID |
 | `WIFI_MGR_AP_PASSWORD` | "" | Default AP password |
 | `WIFI_MGR_AP_IP` | "192.168.4.1" | Default AP IP |
+| `WIFI_MGR_MDNS_HOSTNAME` | "esp32-{id}" | mDNS hostname template |
+| `WIFI_MGR_ENABLE_CLI` | n | Enable CLI interface |
+| `WIFI_MGR_ENABLE_WEBUI` | n | Enable embedded Web UI |
+| `WIFI_MGR_WEBUI_CUSTOM_PATH` | "" | Custom Web UI path (LittleFS/SPIFFS) |
 
 ### Runtime Configuration
 
@@ -148,14 +164,15 @@ wifi_manager_config_t config = {
     },
     .default_var_count = 2,
 
-    // Retry config
+    // Retry config with exponential backoff
     .max_retry_per_network = 3,
-    .retry_interval_ms = 5000,
+    .retry_interval_ms = 5000,      // Base interval
+    .retry_max_interval_ms = 60000, // Max backoff
     .auto_reconnect = true,
 
-    // SoftAP config
+    // SoftAP config (supports {id} placeholder for MAC suffix)
     .default_ap = {
-        .ssid = "MyDevice-Config",
+        .ssid = "MyDevice-{id}",
         .password = "",
         .ip = "192.168.4.1",
     },
@@ -170,14 +187,18 @@ wifi_manager_config_t config = {
         .auth_username = "admin",
         .auth_password = "secret",
     },
+
+    // mDNS (supports {id} placeholder)
+    .mdns = {
+        .enable = true,
+        .hostname = "esp32-{id}",
+    },
 };
 
 wifi_manager_init(&config);
 ```
 
-## API Reference
-
-### C API
+## C API Reference
 
 ```c
 // Initialization
@@ -211,28 +232,14 @@ esp_err_t wifi_manager_set_var(const char *key, const char *value);
 esp_err_t wifi_manager_get_var(const char *key, char *value, size_t max_len);
 esp_err_t wifi_manager_del_var(const char *key);
 
-// Shared HTTP server
+// Factory reset
+esp_err_t wifi_manager_factory_reset(void);
+
+// Shared HTTP server (for adding custom endpoints)
 httpd_handle_t wifi_manager_get_httpd(void);
 ```
 
-### esp_bus Integration
-
-**Actions (request/response):**
-
-```c
-// Get status
-wifi_status_t status;
-esp_bus_req(WIFI_REQ(WIFI_ACTION_GET_STATUS), NULL, 0, &status, sizeof(status), NULL, 100);
-
-// Add network
-wifi_network_t net = {"NewWifi", "password", 8};
-esp_bus_req(WIFI_REQ(WIFI_ACTION_ADD_NETWORK), &net, sizeof(net), NULL, 0, NULL, 100);
-
-// Scan
-wifi_scan_result_t results[10];
-size_t count;
-esp_bus_req(WIFI_REQ(WIFI_ACTION_SCAN), NULL, 0, results, sizeof(results), &count, 5000);
-```
+## esp_bus Integration
 
 **Events (pub/sub):**
 
@@ -242,59 +249,197 @@ void on_connected(const char *event, const void *data, size_t len, void *ctx) {
     ESP_LOGI(TAG, "Connected to %s, RSSI: %d", info->ssid, info->rssi);
 }
 
-esp_bus_subscribe(WIFI_EVT(WIFI_MGR_EVT_CONNECTED), on_connected, NULL);
-esp_bus_subscribe(WIFI_EVT(WIFI_MGR_EVT_DISCONNECTED), on_disconnected, NULL);
-esp_bus_subscribe(WIFI_EVT(WIFI_MGR_EVT_GOT_IP), on_got_ip, NULL);
+esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_CONNECTED), on_connected, NULL);
+esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_DISCONNECTED), on_disconnected, NULL);
+esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_GOT_IP), on_got_ip, NULL);
+esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_SCAN_DONE), on_scan_done, NULL);
+esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_NETWORK_ADDED), on_network_added, NULL);
+esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_VAR_CHANGED), on_var_changed, NULL);
 ```
 
-### REST API
+## CLI Commands
 
-See [docs/API.md](docs/API.md) for full REST API documentation.
+Enable with `CONFIG_WIFI_MGR_ENABLE_CLI=y`:
 
-**Quick reference:**
+| Command | Description |
+|---------|-------------|
+| `wifi status` | Show connection status |
+| `wifi scan` | Scan available networks |
+| `wifi list` | List saved networks |
+| `wifi add <ssid> [password] [priority]` | Add network |
+| `wifi del <ssid>` | Remove network |
+| `wifi connect [ssid]` | Connect (auto or specific) |
+| `wifi disconnect` | Disconnect |
+| `wifi ap start` | Start SoftAP |
+| `wifi ap stop` | Stop SoftAP |
+| `wifi reset` | Factory reset |
+| `wifi var get <key>` | Get variable |
+| `wifi var set <key> <value>` | Set variable |
+
+## REST API Reference
+
+Base URL: `http://<device-ip>/api/wifi` (configurable via `api_base_path`)
+
+### Authentication
+
+If `enable_auth = true`, all endpoints require Basic Auth:
+
+```bash
+curl -u admin:password http://192.168.4.1/api/wifi/status
+```
+
+### Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/wifi/status` | Get connection status |
-| GET | `/api/wifi/scan` | Scan available networks |
-| GET | `/api/wifi/networks` | List saved networks |
-| POST | `/api/wifi/networks` | Add new network |
-| DELETE | `/api/wifi/networks/:ssid` | Remove network |
-| POST | `/api/wifi/connect` | Connect (auto or specific SSID) |
-| POST | `/api/wifi/disconnect` | Disconnect |
-| GET | `/api/wifi/ap/status` | Get AP status |
-| POST | `/api/wifi/ap/start` | Start SoftAP |
-| POST | `/api/wifi/ap/stop` | Stop SoftAP |
-| GET | `/api/wifi/vars` | List custom variables |
-| PUT | `/api/wifi/vars/:key` | Set variable |
+| GET | `/status` | Get connection status |
+| GET | `/scan` | Scan available networks |
+| GET | `/networks` | List saved networks |
+| POST | `/networks` | Add new network |
+| PUT | `/networks/:ssid` | Update network |
+| DELETE | `/networks/:ssid` | Remove network |
+| POST | `/connect` | Connect (auto or specific SSID) |
+| POST | `/disconnect` | Disconnect |
+| GET | `/ap/status` | Get AP status |
+| GET | `/ap/config` | Get AP configuration |
+| PUT | `/ap/config` | Update AP configuration |
+| POST | `/ap/start` | Start SoftAP |
+| POST | `/ap/stop` | Stop SoftAP |
+| GET | `/vars` | List custom variables |
+| PUT | `/vars/:key` | Set variable |
+| DELETE | `/vars/:key` | Delete variable |
+| POST | `/factory_reset` | Factory reset |
+
+### Example Requests
+
+```bash
+# Get status
+curl http://192.168.4.1/api/wifi/status
+
+# Scan networks
+curl http://192.168.4.1/api/wifi/scan
+
+# Add network
+curl -X POST http://192.168.4.1/api/wifi/networks \
+  -H "Content-Type: application/json" \
+  -d '{"ssid": "MyWiFi", "password": "secret123", "priority": 10}'
+
+# Connect to specific network
+curl -X POST http://192.168.4.1/api/wifi/connect \
+  -H "Content-Type: application/json" \
+  -d '{"ssid": "MyWiFi"}'
+
+# Auto-connect (highest priority)
+curl -X POST http://192.168.4.1/api/wifi/connect
+
+# Delete network
+curl -X DELETE http://192.168.4.1/api/wifi/networks/MyWiFi
+
+# Set custom variable
+curl -X PUT http://192.168.4.1/api/wifi/vars/device_name \
+  -H "Content-Type: application/json" \
+  -d '{"value": "Living Room"}'
+```
+
+### Response Examples
+
+**GET /status**
+```json
+{
+  "state": "connected",
+  "ssid": "MyWiFi",
+  "ip": "192.168.1.100",
+  "gateway": "192.168.1.1",
+  "netmask": "255.255.255.0",
+  "dns": "192.168.1.1",
+  "rssi": -65,
+  "quality": 70,
+  "channel": 6,
+  "mac": "AA:BB:CC:DD:EE:FF",
+  "hostname": "esp32-aabbcc",
+  "uptime_ms": 123456,
+  "ap_active": false
+}
+```
+
+**GET /scan**
+```json
+{
+  "networks": [
+    {"ssid": "MyWiFi", "rssi": -65, "auth": "WPA2"},
+    {"ssid": "Neighbor", "rssi": -80, "auth": "WPA/WPA2"},
+    {"ssid": "OpenNet", "rssi": -70, "auth": "OPEN"}
+  ]
+}
+```
+
+**GET /ap/status**
+```json
+{
+  "active": true,
+  "ssid": "ESP32-AABBCC",
+  "ip": "192.168.4.1",
+  "channel": 1,
+  "sta_count": 2,
+  "clients": [
+    {"mac": "AA:BB:CC:DD:EE:01", "ip": "192.168.4.2"},
+    {"mac": "AA:BB:CC:DD:EE:02", "ip": "192.168.4.3"}
+  ]
+}
+```
+
+### Error Responses
+
+```json
+{"error": "Error message"}
+```
+
+| HTTP Code | Description |
+|-----------|-------------|
+| 400 | Bad Request - Invalid JSON, missing field |
+| 401 | Unauthorized - Auth required |
+| 404 | Not Found - Network/Variable does not exist |
+| 500 | Internal Error - Operation failed |
 
 ## Connection Flow
 
 ```
 boot → load saved networks → try connect →
-  ├── success → emit connected event
+  ├── success → emit CONNECTED event → emit GOT_IP event
   └── fail all → start captive portal (if enabled)
 
 Auto-connect logic:
 1. Load saved networks from NVS (sorted by priority DESC)
 2. For each network:
    a. Try connect (max_retry_per_network times)
-   b. Wait retry_interval_ms between retries
+   b. Exponential backoff between retries
    c. If success → done
    d. If fail → try next network
 3. If all fail and captive_portal enabled → start AP
 4. If connected and disconnected → auto-reconnect if enabled
 ```
 
-## Examples
+## Captive Portal
 
-See [examples/](examples/) directory for complete example projects.
+When no networks are configured or all connections fail, the device starts a SoftAP with captive portal:
+
+1. Connect to AP (e.g., "ESP32-AABBCC")
+2. OS automatically opens captive portal popup
+3. Configure WiFi via Web UI or REST API
+4. Device connects and AP stops (if `stop_ap_on_connect = true`)
+
+Supported captive portal detection:
+- Android: `/generate_204`, `/gen_204`
+- iOS/macOS: `/hotspot-detect.html`
+- Windows: `/ncsi.txt`, `/connecttest.txt`
+- Firefox: `/success.txt`, `/canonical.html`
 
 ## Dependencies
 
 - ESP-IDF >= 5.0.0
-- [esp_bus](https://github.com/tuanpmt/esp_bus) - Event bus component
-- json - JSON parsing component
+- [esp_bus](https://components.espressif.com/components/tuanpmt/esp_bus) - Event bus component
+- cJSON - JSON parsing (included in ESP-IDF)
+- mbedTLS - Base64 for Basic Auth (included in ESP-IDF)
 
 ## License
 
