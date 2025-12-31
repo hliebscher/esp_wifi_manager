@@ -277,6 +277,14 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
         }
     }
 
+    // Init CLI if enabled
+#ifdef CONFIG_WIFI_MGR_ENABLE_CLI
+    ret = wifi_mgr_cli_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "CLI init failed: %s", esp_err_to_name(ret));
+    }
+#endif
+
     g_wifi_mgr->initialized = true;
     g_wifi_mgr->state = WIFI_STATE_DISCONNECTED;
 
