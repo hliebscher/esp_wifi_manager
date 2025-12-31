@@ -61,5 +61,23 @@ menu "WiFi Manager"
             wifi_del, wifi_connect, wifi_disconnect, wifi_ap_start,
             wifi_ap_stop, wifi_reset, wifi_var_get, wifi_var_set
 
+    config WIFI_MGR_ENABLE_WEBUI
+        bool "Enable Web UI"
+        default n
+        help
+            Enable embedded Web UI for WiFi Manager.
+            Serves responsive web interface at root path (/).
+            Files are compressed with gzip (~10KB total).
+
+    config WIFI_MGR_WEBUI_CUSTOM_PATH
+        string "Custom Web UI path (filesystem)"
+        default ""
+        depends on WIFI_MGR_ENABLE_WEBUI
+        help
+            Optional path to custom Web UI files on SPIFFS/LittleFS.
+            If set, files from this path will be served instead of
+            embedded defaults. Leave empty to use embedded Web UI.
+            Example: "/spiffs/www"
+
 endmenu
 

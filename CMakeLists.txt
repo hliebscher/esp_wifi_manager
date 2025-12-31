@@ -15,10 +15,23 @@ set(PRIV_REQUIRES
     mbedtls
 )
 
+set(EMBED_FILES)
+
 # Add CLI if enabled
 if(CONFIG_WIFI_MGR_ENABLE_CLI)
     list(APPEND SRCS "src/esp_wifi_manager_cli.c")
     list(APPEND PRIV_REQUIRES console)
+endif()
+
+# Add Web UI if enabled
+if(CONFIG_WIFI_MGR_ENABLE_WEBUI)
+    list(APPEND SRCS "src/esp_wifi_manager_webui.c")
+    # Embed gzipped frontend files
+    set(EMBED_FILES
+        "frontend/dist/index.html"
+        "frontend/dist/assets/app.js.gz"
+        "frontend/dist/assets/index.css.gz"
+    )
 endif()
 
 idf_component_register(
@@ -35,5 +48,6 @@ idf_component_register(
         esp_event
         mdns
     PRIV_REQUIRES ${PRIV_REQUIRES}
+    EMBED_FILES ${EMBED_FILES}
 )
 

@@ -840,6 +840,11 @@ esp_err_t wifi_mgr_http_init(void)
     httpd_uri_t options_uri = { .uri = uri_options_wildcard, .method = HTTP_OPTIONS, .handler = handler_options };
     httpd_register_uri_handler(g_wifi_mgr->httpd, &options_uri);
 
+    // Initialize Web UI if enabled (before captive portal catch-all)
+#ifdef CONFIG_WIFI_MGR_ENABLE_WEBUI
+    wifi_mgr_webui_init(g_wifi_mgr->httpd);
+#endif
+
     // Captive portal redirect (catch-all, must be last)
     if (g_wifi_mgr->config.enable_captive_portal) {
         httpd_uri_t captive_uri = { .uri = "/*", .method = HTTP_GET, .handler = handler_captive_redirect };

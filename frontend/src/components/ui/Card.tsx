@@ -5,10 +5,9 @@ interface CardProps {
   title?: string;
   action?: ComponentChildren;
   children: ComponentChildren;
-  collapsible?: boolean;
 }
 
-export function Card({ title, action, children, collapsible }: CardProps) {
+export function Card({ title, action, children }: CardProps) {
   return (
     <div class="card">
       {title && (
