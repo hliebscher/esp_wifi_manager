@@ -12,21 +12,14 @@ Example demonstrating WiFi Manager with embedded Web UI.
 
 ## Build & Flash
 
-First, build the frontend:
-
-```bash
-cd frontend
-npm install
-npm run build
-cd ..
-```
-
-Then build and flash:
+**Note**: Web UI is pre-built and embedded in the component. Just enable it in config.
 
 ```bash
 cd examples/with_webui
 idf.py build flash monitor
 ```
+
+If you want to modify the frontend, see `with_webui_customize` example.
 
 ## Usage
 

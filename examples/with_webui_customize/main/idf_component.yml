@@ -1,2 +1,6 @@
 dependencies:
   tuanpmt/esp_bus: "1.0.3"
+  joltwallet/littlefs: "^1.14"
+  esp_wifi_manager:
+    version: "*"
+    path: "../../.."

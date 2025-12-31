@@ -3,10 +3,10 @@
  * @brief ESP WiFi Manager - Customizable Web UI Example
  *
  * This example demonstrates:
- * - WiFi Manager with customizable Web UI from SPIFFS
- * - Custom frontend files served from /spiffs/
+ * - WiFi Manager with customizable Web UI from LittleFS
+ * - Custom frontend files served from /littlefs/
  * - Fallback to embedded Web UI if files not found
- * - Easy frontend replacement without recompiling
+ * - Copy frontend/ folder and build your own UI
  */
 
 #include <stdio.h>
@@ -14,7 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "esp_spiffs.h"
+#include "esp_littlefs.h"
 #include "nvs_flash.h"
 #include "esp_wifi_manager.h"
 #include "esp_bus.h"
@@ -22,35 +22,35 @@
 static const char *TAG = "wifi_webui_custom";
 
 /**
- * @brief Initialize SPIFFS filesystem
+ * @brief Initialize LittleFS filesystem
  */
-static esp_err_t init_spiffs(void)
+static esp_err_t init_littlefs(void)
 {
-    ESP_LOGI(TAG, "Initializing SPIFFS");
+    ESP_LOGI(TAG, "Initializing LittleFS");
 
-    esp_vfs_spiffs_conf_t conf = {
-        .base_path = "/spiffs",
+    esp_vfs_littlefs_conf_t conf = {
+        .base_path = "/littlefs",
         .partition_label = "storage",
-        .max_files = 5,
-        .format_if_mount_failed = true
+        .format_if_mount_failed = true,
+        .dont_mount = false,
     };
 
-    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    esp_err_t ret = esp_vfs_littlefs_register(&conf);
     if (ret != ESP_OK) {
         if (ret == ESP_FAIL) {
             ESP_LOGE(TAG, "Failed to mount or format filesystem");
         } else if (ret == ESP_ERR_NOT_FOUND) {
-            ESP_LOGE(TAG, "Failed to find SPIFFS partition");
+            ESP_LOGE(TAG, "Failed to find LittleFS partition");
         } else {
-            ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
+            ESP_LOGE(TAG, "Failed to initialize LittleFS (%s)", esp_err_to_name(ret));
         }
         return ret;
     }
 
     size_t total = 0, used = 0;
-    ret = esp_spiffs_info("storage", &total, &used);
+    ret = esp_littlefs_info("storage", &total, &used);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "SPIFFS: %d/%d bytes used", used, total);
+        ESP_LOGI(TAG, "LittleFS: %zu/%zu bytes used", used, total);
     }
 
     return ESP_OK;
@@ -87,8 +87,8 @@ void app_main(void)
     ESP_LOGI(TAG, "  ESP WiFi Manager - Customizable Web UI");
     ESP_LOGI(TAG, "==============================================");
 
-    // Initialize SPIFFS for custom frontend
-    init_spiffs();
+    // Initialize LittleFS for custom frontend
+    init_littlefs();
 
     // Initialize esp_bus
     ESP_ERROR_CHECK(esp_bus_init());
@@ -136,10 +136,10 @@ void app_main(void)
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "WiFi Manager with customizable Web UI");
-    ESP_LOGI(TAG, "Custom files from: /spiffs/");
-    ESP_LOGI(TAG, "  - /spiffs/index.html");
-    ESP_LOGI(TAG, "  - /spiffs/assets/app.js");
-    ESP_LOGI(TAG, "  - /spiffs/assets/index.css");
+    ESP_LOGI(TAG, "Custom files from: /littlefs/");
+    ESP_LOGI(TAG, "  - /littlefs/index.html");
+    ESP_LOGI(TAG, "  - /littlefs/assets/app.js.gz");
+    ESP_LOGI(TAG, "  - /littlefs/assets/index.css.gz");
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "If custom files not found, embedded UI is used.");
     ESP_LOGI(TAG, "");
