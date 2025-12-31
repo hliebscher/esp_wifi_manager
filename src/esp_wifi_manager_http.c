@@ -659,6 +659,70 @@ static esp_err_t handler_post_factory_reset(httpd_req_t *req)
 }
 
 // =============================================================================
+// Simple Fallback Page (when Web UI not enabled)
+// =============================================================================
+
+static const char *simple_page_html =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>ESP32 WiFi Setup</title>"
+    "<style>"
+    "*{box-sizing:border-box;margin:0;padding:0}"
+    "body{font-family:system-ui,sans-serif;background:#f0f4f8;padding:20px}"
+    ".c{max-width:400px;margin:0 auto;background:#fff;padding:20px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.1)}"
+    "h1{font-size:1.5em;margin-bottom:20px;color:#333}"
+    "input,select,button{width:100%;padding:12px;margin:8px 0;border:1px solid #ddd;border-radius:8px;font-size:16px}"
+    "button{background:#3b82f6;color:#fff;border:none;cursor:pointer}"
+    "button:hover{background:#2563eb}"
+    ".nets{margin:15px 0}"
+    ".net{padding:10px;background:#f8fafc;margin:5px 0;border-radius:6px;cursor:pointer}"
+    ".net:hover{background:#e2e8f0}"
+    ".msg{padding:10px;border-radius:6px;margin:10px 0}"
+    ".ok{background:#d1fae5;color:#065f46}"
+    ".err{background:#fee2e2;color:#991b1b}"
+    "</style></head><body>"
+    "<div class='c'><h1>ESP32 WiFi Setup</h1>"
+    "<div id='msg'></div>"
+    "<div id='nets' class='nets'><p>Loading networks...</p></div>"
+    "<button onclick='scan()'>Scan Networks</button>"
+    "<hr style='margin:20px 0;border:none;border-top:1px solid #eee'>"
+    "<input id='ssid' placeholder='WiFi Name (SSID)'>"
+    "<input id='pass' type='password' placeholder='Password'>"
+    "<button onclick='connect()'>Connect</button>"
+    "</div>"
+    "<script>"
+    "const API='/api/wifi';"
+    "function msg(t,ok){document.getElementById('msg').innerHTML='<div class=\"msg '+(ok?'ok':'err')+'\">'+t+'</div>';}"
+    "async function scan(){"
+    "document.getElementById('nets').innerHTML='<p>Scanning...</p>';"
+    "try{const r=await fetch(API+'/scan');const d=await r.json();"
+    "let h='';d.networks.forEach(n=>{"
+    "h+='<div class=\"net\" onclick=\"document.getElementById(\\'ssid\\').value=\\''+n.ssid+'\\'\">'+"
+    "n.ssid+' ('+n.rssi+' dBm)</div>';});"
+    "document.getElementById('nets').innerHTML=h||'<p>No networks</p>';"
+    "}catch(e){document.getElementById('nets').innerHTML='<p>Scan failed</p>';}}"
+    "async function connect(){"
+    "const s=document.getElementById('ssid').value;"
+    "const p=document.getElementById('pass').value;"
+    "if(!s){msg('Enter SSID',0);return;}"
+    "try{await fetch(API+'/networks',{method:'POST',headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify({ssid:s,password:p,priority:10})});"
+    "await fetch(API+'/connect',{method:'POST',headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify({ssid:s})});"
+    "msg('Connecting to '+s+'...',1);"
+    "}catch(e){msg('Error: '+e,0);}}"
+    "scan();"
+    "</script></body></html>";
+
+static esp_err_t handler_simple_page(httpd_req_t *req)
+{
+    add_cors_headers(req);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, simple_page_html, strlen(simple_page_html));
+    return ESP_OK;
+}
+
+// =============================================================================
 // Captive Portal
 // =============================================================================
 
@@ -840,9 +904,14 @@ esp_err_t wifi_mgr_http_init(void)
     httpd_uri_t options_uri = { .uri = uri_options_wildcard, .method = HTTP_OPTIONS, .handler = handler_options };
     httpd_register_uri_handler(g_wifi_mgr->httpd, &options_uri);
 
-    // Initialize Web UI if enabled (before captive portal catch-all)
+    // Initialize Web UI if enabled, otherwise use simple fallback page
 #ifdef CONFIG_WIFI_MGR_ENABLE_WEBUI
     wifi_mgr_webui_init(g_wifi_mgr->httpd);
+#else
+    // Simple fallback page at root when Web UI not enabled
+    httpd_uri_t simple_uri = { .uri = "/", .method = HTTP_GET, .handler = handler_simple_page };
+    httpd_register_uri_handler(g_wifi_mgr->httpd, &simple_uri);
+    ESP_LOGI(TAG, "Simple setup page registered at /");
 #endif
 
     // Captive portal redirect (catch-all, must be last)
