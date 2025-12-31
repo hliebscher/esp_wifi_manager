@@ -200,7 +200,7 @@ esp_err_t wifi_mgr_dns_start(void)
     dns_running = true;
 
     // Create DNS server task
-    BaseType_t ret = xTaskCreate(dns_server_task, "dns_srv", 3072, NULL, 5, &dns_task_handle);
+    BaseType_t ret = xTaskCreate(dns_server_task, "dns_srv", 4096, NULL, 5, &dns_task_handle);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create DNS task");
         dns_running = false;
