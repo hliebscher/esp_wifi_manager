@@ -342,15 +342,18 @@ esp_err_t wifi_manager_deinit(bool deinit_wifi)
     if (deinit_wifi) {
         esp_wifi_stop();
         esp_wifi_deinit();
-    }
     
-    if (g_wifi_mgr->sta_netif && g_wifi_mgr->sta_netif_owned) {
-        esp_netif_destroy(g_wifi_mgr->sta_netif);
+        // Unless we stop the wifi, we should not destroy the netifs. If the user wants
+        // to reuse the netifs in their own code, they can reobtain the handles via
+        // esp_netif_get_handle_from_ifkey()
+        if (g_wifi_mgr->sta_netif && g_wifi_mgr->sta_netif_owned) {
+            esp_netif_destroy(g_wifi_mgr->sta_netif);
+        }
+        if (g_wifi_mgr->ap_netif && g_wifi_mgr->ap_netif_owned) {
+            esp_netif_destroy(g_wifi_mgr->ap_netif);
+        }
     }
-    if (g_wifi_mgr->ap_netif && g_wifi_mgr->ap_netif_owned) {
-        esp_netif_destroy(g_wifi_mgr->ap_netif);
-    }
-    
+        
     // Task tự delete khi nhận WM_INT_EVT_STOP, không cần delete lại
     g_wifi_mgr->task = NULL;
     vSemaphoreDelete(g_wifi_mgr->mutex);
