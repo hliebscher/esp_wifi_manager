@@ -100,6 +100,7 @@ static esp_err_t send_error(httpd_req_t *req, int code, const char *msg)
     switch (code) {
         case 400: status = "400 Bad Request"; break;
         case 401: status = "401 Unauthorized"; break;
+        case 403: status = "403 Forbidden"; break;
         case 404: status = "404 Not Found"; break;
         case 500: status = "500 Internal Server Error"; break;
         default:  status = "400 Bad Request"; break;
@@ -112,6 +113,33 @@ static esp_err_t send_error(httpd_req_t *req, int code, const char *msg)
     snprintf(buf, sizeof(buf), "{\"error\":\"%s\"}", msg);
     httpd_resp_sendstr(req, buf);
     return ESP_FAIL;
+}
+
+/**
+ * @brief Run pre-request hook and auth check for API handlers
+ *
+ * Calls the pre-request hook first (if configured), then the built-in auth check.
+ * Returns true if the request should proceed, false if rejected.
+ * On rejection, the appropriate error response has already been sent.
+ */
+static bool check_api_access(httpd_req_t *req)
+{
+    // Pre-request hook (called before auth, so hook can replace/supplement auth)
+    if (g_wifi_mgr->config.http.pre_request_hook) {
+        esp_err_t hook_ret = g_wifi_mgr->config.http.pre_request_hook(req, g_wifi_mgr->config.http.hook_ctx);
+        if (hook_ret != ESP_OK) {
+            send_error(req, 403, "Forbidden");
+            return false;
+        }
+    }
+
+    // Built-in auth check
+    if (!check_auth(req)) {
+        send_error(req, 401, "Unauthorized");
+        return false;
+    }
+
+    return true;
 }
 
 /**
@@ -153,8 +181,8 @@ static cJSON *read_json_body(httpd_req_t *req)
 // GET /status
 static esp_err_t handler_get_status(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     wifi_status_t status;
@@ -185,8 +213,8 @@ static esp_err_t handler_get_status(httpd_req_t *req)
 // GET /scan
 static esp_err_t handler_get_scan(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     wifi_scan_result_t results[WIFI_MGR_MAX_SCAN_RESULTS];
@@ -227,8 +255,8 @@ static esp_err_t handler_get_scan(httpd_req_t *req)
 // GET /networks
 static esp_err_t handler_get_networks(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     wifi_network_t networks[WIFI_MGR_MAX_NETWORKS];
@@ -253,8 +281,8 @@ static esp_err_t handler_get_networks(httpd_req_t *req)
 // POST /networks
 static esp_err_t handler_post_networks(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     cJSON *json = read_json_body(req);
@@ -293,8 +321,8 @@ static esp_err_t handler_post_networks(httpd_req_t *req)
 // DELETE /networks/:ssid
 static esp_err_t handler_delete_network(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     // Extract SSID from URI
@@ -320,8 +348,8 @@ static esp_err_t handler_delete_network(httpd_req_t *req)
 // PUT /networks/:ssid - Update network (password, priority)
 static esp_err_t handler_put_network(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     // Extract SSID from URI
@@ -370,8 +398,8 @@ static esp_err_t handler_put_network(httpd_req_t *req)
 // POST /connect
 static esp_err_t handler_post_connect(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     if (req->content_len > 0) {
@@ -394,8 +422,8 @@ static esp_err_t handler_post_connect(httpd_req_t *req)
 // POST /disconnect
 static esp_err_t handler_post_disconnect(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     wifi_manager_disconnect();
@@ -405,8 +433,8 @@ static esp_err_t handler_post_disconnect(httpd_req_t *req)
 // GET /ap/status
 static esp_err_t handler_get_ap_status(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     wifi_ap_status_t status;
@@ -435,8 +463,8 @@ static esp_err_t handler_get_ap_status(httpd_req_t *req)
 // GET /ap/config
 static esp_err_t handler_get_ap_config(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     wifi_mgr_ap_config_t config;
@@ -462,8 +490,8 @@ static esp_err_t handler_get_ap_config(httpd_req_t *req)
 // PUT /ap/config
 static esp_err_t handler_put_ap_config(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     cJSON *json = read_json_body(req);
@@ -515,8 +543,8 @@ static esp_err_t handler_put_ap_config(httpd_req_t *req)
 // POST /ap/start
 static esp_err_t handler_post_ap_start(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     wifi_mgr_ap_config_t *config = NULL;
@@ -546,8 +574,8 @@ static esp_err_t handler_post_ap_start(httpd_req_t *req)
 // POST /ap/stop
 static esp_err_t handler_post_ap_stop(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     wifi_manager_stop_ap();
@@ -557,8 +585,8 @@ static esp_err_t handler_post_ap_stop(httpd_req_t *req)
 // GET /vars
 static esp_err_t handler_get_vars(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     wifi_mgr_lock();
@@ -583,8 +611,8 @@ static esp_err_t handler_get_vars(httpd_req_t *req)
 // PUT /vars/:key
 static esp_err_t handler_put_var(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
     
     // Extract key from URI
@@ -609,6 +637,15 @@ static esp_err_t handler_put_var(httpd_req_t *req)
         cJSON_Delete(json);
         return send_error(req, 400, "Missing value");
     }
+
+    // Run variable validation callback if configured
+    if (g_wifi_mgr->config.on_before_var_set) {
+        esp_err_t vret = g_wifi_mgr->config.on_before_var_set(key, value->valuestring, g_wifi_mgr->config.var_validator_ctx);
+        if (vret != ESP_OK) {
+            cJSON_Delete(json);
+            return send_error(req, 400, "var_invalid");
+        }
+    }
     
     wifi_manager_set_var(key, value->valuestring);
     cJSON_Delete(json);
@@ -619,8 +656,8 @@ static esp_err_t handler_put_var(httpd_req_t *req)
 // DELETE /vars/:key
 static esp_err_t handler_delete_var(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
 
     // Extract key from URI
@@ -646,8 +683,8 @@ static esp_err_t handler_delete_var(httpd_req_t *req)
 // POST /factory_reset
 static esp_err_t handler_post_factory_reset(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        return send_error(req, 401, "Unauthorized");
+    if (!check_api_access(req)) {
+        return ESP_FAIL;
     }
 
     esp_err_t ret = wifi_manager_factory_reset();
