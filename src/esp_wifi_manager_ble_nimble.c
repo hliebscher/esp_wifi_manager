@@ -60,6 +60,9 @@ static char s_device_name[32];
 static QueueHandle_t s_cmd_queue;
 static TaskHandle_t  s_cmd_task;
 
+/** true if we initialized the NimBLE stack ourselves; false if it was already running. */
+static bool s_ble_stack_owned = false;
+
 // Forward declarations
 static void nimble_host_task(void *param);
 static void ble_on_sync(void);
@@ -308,16 +311,29 @@ uint16_t wifi_mgr_ble_backend_get_mtu(void)
     return ble_att_mtu(s_conn_handle);
 }
 
+bool wifi_mgr_ble_backend_is_stack_running(void)
+{
+    return ble_hs_is_enabled();
+}
+
 esp_err_t wifi_mgr_ble_backend_init(const char *device_name)
 {
     strncpy(s_device_name, device_name, sizeof(s_device_name) - 1);
     s_device_name[sizeof(s_device_name) - 1] = '\0';
 
-    // Initialize NimBLE
-    esp_err_t ret = nimble_port_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(ret));
-        return ret;
+    if (wifi_mgr_ble_backend_is_stack_running()) {
+        // Stack already running — service-only mode
+        s_ble_stack_owned = false;
+        ESP_LOGI(TAG, "NimBLE stack already running, registering service only");
+    } else {
+        // Full stack init
+        s_ble_stack_owned = true;
+
+        esp_err_t ret = nimble_port_init();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
     }
 
     // Configure host callbacks
@@ -354,7 +370,9 @@ esp_err_t wifi_mgr_ble_backend_init(const char *device_name)
     s_cmd_queue = xQueueCreate(BLE_CMD_QUEUE_DEPTH, sizeof(ble_cmd_msg_t));
     if (!s_cmd_queue) {
         ESP_LOGE(TAG, "Failed to create command queue");
-        nimble_port_deinit();
+        if (s_ble_stack_owned) {
+            nimble_port_deinit();
+        }
         return ESP_ERR_NO_MEM;
     }
 
@@ -364,26 +382,60 @@ esp_err_t wifi_mgr_ble_backend_init(const char *device_name)
         ESP_LOGE(TAG, "Failed to create command task");
         vQueueDelete(s_cmd_queue);
         s_cmd_queue = NULL;
-        nimble_port_deinit();
+        if (s_ble_stack_owned) {
+            nimble_port_deinit();
+        }
         return ESP_ERR_NO_MEM;
     }
 
-    // Start NimBLE host task
-    nimble_port_freertos_init(nimble_host_task);
+    // Start NimBLE host task only if we own the stack
+    if (s_ble_stack_owned) {
+        nimble_port_freertos_init(nimble_host_task);
+    } else {
+        // Stack is already running — trigger advertising via on_sync path
+        start_advertising();
+    }
 
     return ESP_OK;
 }
 
 esp_err_t wifi_mgr_ble_backend_deinit(void)
 {
-    int rc = nimble_port_stop();
-    if (rc != 0) {
-        ESP_LOGE(TAG, "nimble_port_stop failed, rc=%d", rc);
+    // Disconnect active client
+    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        // Wait for async disconnect to complete (gap_event_handler sets
+        // s_conn_handle = BLE_HS_CONN_HANDLE_NONE on disconnect event)
+        for (int i = 0; i < 50 && s_conn_handle != BLE_HS_CONN_HANDLE_NONE; i++) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
     }
 
-    rc = nimble_port_deinit();
+    // Stop advertising
+    ble_gap_adv_stop();
+
+    // Reset GATT services so our service is unregistered.
+    // ble_gatts_reset() removes all services; re-register the mandatory ones
+    // and commit with ble_gatts_start() so the server is in a stable state.
+    int rc = ble_gatts_reset();
     if (rc != 0) {
-        ESP_LOGE(TAG, "nimble_port_deinit failed, rc=%d", rc);
+        ESP_LOGW(TAG, "ble_gatts_reset failed, rc=%d", rc);
+    }
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+    ble_gatts_start();
+
+    // Full stack teardown only if we own it
+    if (s_ble_stack_owned) {
+        int rc = nimble_port_stop();
+        if (rc != 0) {
+            ESP_LOGE(TAG, "nimble_port_stop failed, rc=%d", rc);
+        }
+
+        rc = nimble_port_deinit();
+        if (rc != 0) {
+            ESP_LOGE(TAG, "nimble_port_deinit failed, rc=%d", rc);
+        }
     }
 
     // Clean up command processing task and queue
@@ -402,6 +454,7 @@ esp_err_t wifi_mgr_ble_backend_deinit(void)
     }
 
     s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    s_ble_stack_owned = false;
 
     return ESP_OK;
 }

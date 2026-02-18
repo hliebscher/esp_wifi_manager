@@ -306,6 +306,54 @@ CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=6144
 ```
 
 
+### Stack Ownership & Deinitialization
+
+The BLE interface supports two modes of operation depending on whether the application manages the BLE stack independently:
+
+| Mode | Init behavior | Deinit behavior | Use case |
+|------|---------------|-----------------|----------|
+| **Owns the stack** (default) | Initializes BLE host stack + registers GATT service | Tears down everything (service, advertising, host stack, controller) | App doesn't use BLE for anything else |
+| **Service only** | Detects host stack already running, registers GATT service only | Unregisters service and stops advertising, leaves host stack running | App manages the BLE lifecycle |
+
+The mode is detected automatically: if the BLE host stack is already initialized when `wifi_manager_init()` is called, the WiFi Manager registers only its GATT service and leaves the stack alone on deinit. This mirrors the HTTP interface's shared server pattern — if you pass an existing `httpd_handle_t`, the HTTP handlers are unregistered on deinit without stopping the server.
+
+**NimBLE:**
+
+```c
+// App-owned BLE stack: init NimBLE before WiFi Manager
+nimble_port_init();
+nimble_port_freertos_init(nimble_host_task);
+
+wifi_manager_init(&(wifi_manager_config_t){
+    .ble = { .enable = true },
+});
+
+// Later: WiFi Manager removes its GATT service but NimBLE keeps running
+wifi_manager_deinit();
+
+// App can continue using BLE for its own services
+```
+
+**Bluedroid:**
+
+```c
+// App-owned BLE stack: init Bluedroid before WiFi Manager
+esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+esp_bt_controller_init(&bt_cfg);
+esp_bt_controller_enable(ESP_BT_MODE_BLE);
+esp_bluedroid_init();
+esp_bluedroid_enable();
+
+wifi_manager_init(&(wifi_manager_config_t){
+    .ble = { .enable = true },
+});
+
+// Later: WiFi Manager unregisters its GATT app but Bluedroid keeps running
+wifi_manager_deinit();
+
+// App can continue using BLE for its own services
+```
+
 ### Service & Characteristics
 
 | UUID | Name | Properties | Description |

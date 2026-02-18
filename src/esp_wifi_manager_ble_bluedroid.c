@@ -127,6 +127,7 @@ static struct {
     uint16_t conn_id;
     uint16_t mtu;
     bool connected;
+    esp_bd_addr_t remote_bda;
 } s_profile = {
     .gatts_if = ESP_GATT_IF_NONE,
     .mtu = 23,
@@ -134,6 +135,9 @@ static struct {
 };
 
 static char s_device_name[32];
+
+/** true if we initialized the BLE stack ourselves; false if it was already running. */
+static bool s_ble_stack_owned = false;
 
 // =============================================================================
 // GAP Event Handler
@@ -225,6 +229,7 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
         case ESP_GATTS_CONNECT_EVT:
             s_profile.conn_id = param->connect.conn_id;
             s_profile.connected = true;
+            memcpy(s_profile.remote_bda, param->connect.remote_bda, sizeof(esp_bd_addr_t));
             ESP_LOGI(TAG, "BLE client connected, conn_id %d", param->connect.conn_id);
 
             wifi_mgr_ble_on_connect();
@@ -311,43 +316,57 @@ uint16_t wifi_mgr_ble_backend_get_mtu(void)
     return s_profile.connected ? s_profile.mtu : 0;
 }
 
+bool wifi_mgr_ble_backend_is_stack_running(void)
+{
+    return esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED;
+}
+
 esp_err_t wifi_mgr_ble_backend_init(const char *device_name)
 {
     strncpy(s_device_name, device_name, sizeof(s_device_name) - 1);
     s_device_name[sizeof(s_device_name) - 1] = '\0';
 
-    // Release classic BT memory
-    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
+    if (wifi_mgr_ble_backend_is_stack_running()) {
+        // Stack already running — service-only mode
+        s_ble_stack_owned = false;
+        ESP_LOGI(TAG, "BLE stack already running, registering service only");
+    } else {
+        // Full stack init
+        s_ble_stack_owned = true;
 
-    // Initialize BT controller
-    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    esp_err_t ret = esp_bt_controller_init(&bt_cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "BT controller init failed: %s", esp_err_to_name(ret));
-        return ret;
+        // Release classic BT memory
+        ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
+
+        // Initialize BT controller
+        esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+        esp_err_t ret = esp_bt_controller_init(&bt_cfg);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "BT controller init failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
+
+        ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "BT controller enable failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
+
+        // Initialize Bluedroid
+        ret = esp_bluedroid_init();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Bluedroid init failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
+
+        ret = esp_bluedroid_enable();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Bluedroid enable failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
     }
 
-    ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "BT controller enable failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // Initialize Bluedroid
-    ret = esp_bluedroid_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Bluedroid init failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    ret = esp_bluedroid_enable();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Bluedroid enable failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    // Register callbacks
-    ret = esp_ble_gatts_register_callback(gatts_event_handler);
+    // Register callbacks (needed in both modes)
+    esp_err_t ret = esp_ble_gatts_register_callback(gatts_event_handler);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "GATTS register callback failed: %s", esp_err_to_name(ret));
         return ret;
@@ -359,7 +378,7 @@ esp_err_t wifi_mgr_ble_backend_init(const char *device_name)
         return ret;
     }
 
-    // Register application profile
+    // Register application profile (triggers GATT table creation + advertising)
     ret = esp_ble_gatts_app_register(PROFILE_APP_IDX);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "GATTS app register failed: %s", esp_err_to_name(ret));
@@ -374,14 +393,31 @@ esp_err_t wifi_mgr_ble_backend_init(const char *device_name)
 
 esp_err_t wifi_mgr_ble_backend_deinit(void)
 {
-    esp_ble_gatts_app_unregister(s_profile.gatts_if);
-    esp_bluedroid_disable();
-    esp_bluedroid_deinit();
-    esp_bt_controller_disable();
-    esp_bt_controller_deinit();
+    // Disconnect active client
+    if (s_profile.connected) {
+        esp_ble_gap_disconnect(s_profile.remote_bda);
+    }
+
+    // Stop advertising
+    esp_ble_gap_stop_advertising();
+
+    // Unregister GATT app (removes our service)
+    if (s_profile.gatts_if != ESP_GATT_IF_NONE) {
+        esp_ble_gatts_app_unregister(s_profile.gatts_if);
+    }
+
+    // Full stack teardown only if we own it
+    if (s_ble_stack_owned) {
+        esp_bluedroid_disable();
+        esp_bluedroid_deinit();
+        esp_bt_controller_disable();
+        esp_bt_controller_deinit();
+    }
 
     s_profile.gatts_if = ESP_GATT_IF_NONE;
     s_profile.connected = false;
+    s_profile.mtu = 23;
+    s_ble_stack_owned = false;
 
     return ESP_OK;
 }
