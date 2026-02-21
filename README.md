@@ -306,6 +306,8 @@ CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=6144
 ```
 
 
+The device advertises the WiFi Service UUID (`0xFFE0`), allowing clients to scan and filter by service UUID — the standard BLE discovery pattern. The device name (configurable via `CONFIG_WIFI_MGR_BLE_DEVICE_NAME`) is also included in the advertising data for further filtering.
+
 ### Stack Ownership & Deinitialization
 
 The BLE interface supports two modes of operation depending on whether the application manages the BLE stack independently:

@@ -143,6 +143,10 @@ static bool s_ble_stack_owned = false;
 // GAP Event Handler
 // =============================================================================
 
+static uint8_t adv_service_uuid[] = {
+    0xE0, 0xFF,  // WIFI_BLE_SVC_UUID (0xFFE0) in little-endian
+};
+
 static esp_ble_adv_data_t adv_data = {
     .set_scan_rsp = false,
     .include_name = true,
@@ -154,8 +158,8 @@ static esp_ble_adv_data_t adv_data = {
     .p_manufacturer_data = NULL,
     .service_data_len = 0,
     .p_service_data = NULL,
-    .service_uuid_len = 0,
-    .p_service_uuid = NULL,
+    .service_uuid_len = sizeof(adv_service_uuid),
+    .p_service_uuid = adv_service_uuid,
     .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
 };
 
