@@ -221,11 +221,16 @@ static void start_advertising(void)
     adv_params.itvl_min = 0x20;
     adv_params.itvl_max = 0x40;
 
+    static const ble_uuid16_t adv_service_uuid = BLE_UUID16_INIT(WIFI_BLE_SVC_UUID);
+
     struct ble_hs_adv_fields fields = {0};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t *)s_device_name;
     fields.name_len = strlen(s_device_name);
     fields.name_is_complete = 1;
+    fields.uuids16 = &adv_service_uuid;
+    fields.num_uuids16 = 1;
+    fields.uuids16_is_complete = 1;
 
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
