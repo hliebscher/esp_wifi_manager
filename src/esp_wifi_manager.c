@@ -404,8 +404,15 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             // Only clear connected bit if this disconnect is for the network we're
             // actually connected to; stale disconnects from failed attempts at other
             // networks should not blow away a working connection.
-            bool is_current = (g_wifi_mgr->connected_ssid[0] == '\0') ||
-                              (strcmp(g_wifi_mgr->connected_ssid, (char *)event->ssid) == 0);
+            bool is_current;
+            if (g_wifi_mgr->connected_ssid[0] != '\0') {
+                is_current = (strcmp(g_wifi_mgr->connected_ssid, (char *)event->ssid) == 0);
+            } else {
+                // connected_ssid not populated yet (STA_CONNECTED queued but not
+                // processed). If WIFI_CONNECTED_BIT is already set, we have a
+                // working connection and this disconnect is stale.
+                is_current = !(xEventGroupGetBits(g_wifi_mgr->event_group) & WIFI_CONNECTED_BIT);
+            }
             if (is_current) {
                 xEventGroupSetBits(g_wifi_mgr->event_group, WIFI_FAIL_BIT);
                 xEventGroupClearBits(g_wifi_mgr->event_group, WIFI_CONNECTED_BIT);
@@ -515,9 +522,17 @@ static void wifi_mgr_task(void *arg)
                     // Check if this disconnect is for the network we're actually
                     // connected to, or a stale event from a failed attempt at a
                     // different network during the connect sequence.
-                    bool is_current_network =
-                        (g_wifi_mgr->connected_ssid[0] == '\0') ||
-                        (strcmp(g_wifi_mgr->connected_ssid, evt.data.disconnect.ssid) == 0);
+                    bool is_current_network;
+                    if (g_wifi_mgr->connected_ssid[0] != '\0') {
+                        is_current_network = (strcmp(g_wifi_mgr->connected_ssid, evt.data.disconnect.ssid) == 0);
+                    } else {
+                        // connected_ssid not populated yet (STA_CONNECTED queued but
+                        // not processed). If WIFI_CONNECTED_BIT is set, the ISR
+                        // already recorded a successful connection and this disconnect
+                        // is stale (e.g. a failed OPT attempt processed after
+                        // OPT-Roam connected).
+                        is_current_network = !(xEventGroupGetBits(g_wifi_mgr->event_group) & WIFI_CONNECTED_BIT);
+                    }
 
                     if (!is_current_network) {
                         // Stale disconnect for a network we're not connected to
