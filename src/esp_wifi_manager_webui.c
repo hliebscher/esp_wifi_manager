@@ -12,6 +12,7 @@
 
 static const char *TAG = "wifi_mgr_webui";
 
+#ifndef CONFIG_WIFI_MGR_WEBUI_CUSTOM_PATH
 // Embedded files (linked via CMakeLists.txt EMBED_FILES)
 // Symbol names: _binary_{filename with . replaced by _}_{start|end}
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
@@ -20,6 +21,7 @@ extern const uint8_t app_js_gz_start[] asm("_binary_app_js_gz_start");
 extern const uint8_t app_js_gz_end[] asm("_binary_app_js_gz_end");
 extern const uint8_t index_css_gz_start[] asm("_binary_index_css_gz_start");
 extern const uint8_t index_css_gz_end[] asm("_binary_index_css_gz_end");
+#endif
 
 /**
  * @brief Try to serve file from custom path (SPIFFS/LittleFS)
@@ -101,11 +103,17 @@ static esp_err_t handler_webui_index(httpd_req_t *req)
         return ESP_OK;
     }
 
+#ifdef CONFIG_WIFI_MGR_WEBUI_CUSTOM_PATH
+    // No embedded fallback — filesystem is the only source
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+    return ESP_FAIL;
+#else
     // Serve embedded index.html
     httpd_resp_set_type(req, "text/html");
     httpd_resp_send(req, (const char *)index_html_start,
                     index_html_end - index_html_start);
     return ESP_OK;
+#endif
 }
 
 /**
@@ -118,6 +126,10 @@ static esp_err_t handler_webui_app_js(httpd_req_t *req)
         return ESP_OK;
     }
 
+#ifdef CONFIG_WIFI_MGR_WEBUI_CUSTOM_PATH
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+    return ESP_FAIL;
+#else
     // Serve embedded gzipped file
     httpd_resp_set_type(req, "application/javascript");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
@@ -125,6 +137,7 @@ static esp_err_t handler_webui_app_js(httpd_req_t *req)
     httpd_resp_send(req, (const char *)app_js_gz_start,
                     app_js_gz_end - app_js_gz_start);
     return ESP_OK;
+#endif
 }
 
 /**
@@ -137,6 +150,10 @@ static esp_err_t handler_webui_index_css(httpd_req_t *req)
         return ESP_OK;
     }
 
+#ifdef CONFIG_WIFI_MGR_WEBUI_CUSTOM_PATH
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
+    return ESP_FAIL;
+#else
     // Serve embedded gzipped file
     httpd_resp_set_type(req, "text/css");
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
@@ -144,6 +161,7 @@ static esp_err_t handler_webui_index_css(httpd_req_t *req)
     httpd_resp_send(req, (const char *)index_css_gz_start,
                     index_css_gz_end - index_css_gz_start);
     return ESP_OK;
+#endif
 }
 
 /**
@@ -179,10 +197,15 @@ esp_err_t wifi_mgr_webui_init(httpd_handle_t httpd)
     };
     httpd_register_uri_handler(httpd, &css_uri);
 
+#ifndef CONFIG_WIFI_MGR_WEBUI_CUSTOM_PATH
     size_t total_size = (index_html_end - index_html_start) +
                         (app_js_gz_end - app_js_gz_start) +
                         (index_css_gz_end - index_css_gz_start);
     ESP_LOGI(TAG, "Web UI registered (embedded size: %zu bytes)", total_size);
+#else
+    ESP_LOGI(TAG, "Web UI registered (serving from filesystem: %s)",
+             CONFIG_WIFI_MGR_WEBUI_CUSTOM_PATH);
+#endif
 
     return ESP_OK;
 }
