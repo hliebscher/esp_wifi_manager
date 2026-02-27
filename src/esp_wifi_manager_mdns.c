@@ -64,8 +64,8 @@ esp_err_t wifi_mgr_mdns_init(void)
     }
     mdns_instance_name_set(instance);
 
-    // Add HTTP service if HTTP is enabled
-    if (g_wifi_mgr->config.http.enable) {
+    // Add HTTP service if HTTP server is running
+    if (g_wifi_mgr->httpd) {
         mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
     }
 
