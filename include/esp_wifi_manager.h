@@ -17,7 +17,7 @@
  * @subsection basic Basic Setup
  * @code{.c}
  * #include "esp_wifi_manager.h"
- * 
+ *
  * void app_main(void) {
  *     // Init với default networks
  *     wifi_manager_init(&(wifi_manager_config_t){
@@ -27,15 +27,14 @@
  *         },
  *         .default_network_count = 2,
  *         .auto_reconnect = true,
- *         
- *         // Enable HTTP REST API
- *         .http = {
- *             .enable = true,
- *             .api_base_path = "/api/wifi",
- *         },
+ *
+ *         // Provisioning: start AP when no networks or all fail
+ *         .provisioning_mode = WIFI_PROV_ON_FAILURE,
+ *         .stop_provisioning_on_connect = true,
+ *         .provisioning_teardown_delay_ms = 5000,
+ *         .enable_ap = true,
  *     });
- *     
- *     // Chờ kết nối (30 giây timeout)
+ *
  *     if (wifi_manager_wait_connected(30000) == ESP_OK) {
  *         ESP_LOGI(TAG, "WiFi connected!");
  *     }
@@ -110,8 +109,9 @@
  * @endcode
  * 
  * @subsection http HTTP REST API
- * 
- * Khi `http.enable = true`, các endpoints sau khả dụng:
+ *
+ * HTTP server starts automatically when `enable_ap` is true or
+ * `http_post_prov_mode != WIFI_HTTP_DISABLED`. Các endpoints sau khả dụng:
  * 
  * | Method | Endpoint | Mô tả |
  * |--------|----------|-------|
@@ -133,9 +133,10 @@
  * 
  * @subsection shared Shared HTTP Server
  * @code{.c}
- * // WiFi Manager tạo httpd
+ * // WiFi Manager tạo httpd (auto when enable_ap=true)
  * wifi_manager_init(&(wifi_manager_config_t){
- *     .http = { .enable = true },
+ *     .provisioning_mode = WIFI_PROV_ON_FAILURE,
+ *     .enable_ap = true,
  * });
  * 
  * // Components khác dùng chung
@@ -163,6 +164,8 @@
  * | wifi:network_added | wifi_network_t | Mạng mới được thêm |
  * | wifi:network_removed | string (ssid) | Mạng bị xóa |
  * | wifi:var_changed | wifi_var_t | Variable thay đổi |
+ * | wifi:provisioning_started | none | Provisioning interfaces started |
+ * | wifi:provisioning_stopped | none | Provisioning interfaces stopped |
  */
 
 #pragma once
@@ -228,6 +231,10 @@ extern "C" {
 #define WIFI_MGR_EVT_NETWORK_UPDATED  "network_updated" ///< Mạng được cập nhật
 #define WIFI_MGR_EVT_NETWORK_REMOVED  "network_removed" ///< Mạng bị xóa
 #define WIFI_MGR_EVT_VAR_CHANGED      "var_changed"     ///< Variable thay đổi
+
+// Events - Provisioning
+#define WIFI_MGR_EVT_PROVISIONING_STARTED  "provisioning_started"  ///< Provisioning interfaces started (AP/BLE)
+#define WIFI_MGR_EVT_PROVISIONING_STOPPED  "provisioning_stopped"  ///< Provisioning interfaces stopped
 
 /**
  * @brief Helper macro tạo request pattern
@@ -379,6 +386,43 @@ typedef struct {
 } wifi_disconnected_t;
 
 // =============================================================================
+// Provisioning Enums
+// =============================================================================
+
+/**
+ * @brief Provisioning mode — controls when provisioning interfaces (AP/BLE) start
+ *
+ * This replaces the old `start_ap_on_init`, `enable_captive_portal` booleans
+ * with a single enum governing startup behavior for all provisioning interfaces.
+ */
+typedef enum {
+    WIFI_PROV_ALWAYS,             ///< Start provisioning at init, regardless of state
+    WIFI_PROV_ON_FAILURE,         ///< Start when unprovisioned OR all networks fail to connect
+    WIFI_PROV_WHEN_UNPROVISIONED, ///< Start only if no saved networks exist
+    WIFI_PROV_MANUAL,             ///< Only via explicit API call (e.g., button press)
+} wifi_provisioning_mode_t;
+
+/**
+ * @brief Action to take when max_reconnect_attempts is exhausted after a post-connect disconnect
+ */
+typedef enum {
+    WIFI_ON_RECONNECT_EXHAUSTED_PROVISION,  ///< Start provisioning interfaces + keep retrying
+    WIFI_ON_RECONNECT_EXHAUSTED_RESTART,    ///< Restart the device (esp_restart)
+} wifi_reconnect_exhausted_action_t;
+
+/**
+ * @brief HTTP behavior after provisioning stops
+ *
+ * Controls what happens to HTTP endpoints when provisioning interfaces are torn down.
+ * During active provisioning, all endpoints are always registered regardless of this setting.
+ */
+typedef enum {
+    WIFI_HTTP_FULL,       ///< Keep UI + API endpoints active after provisioning stops
+    WIFI_HTTP_API_ONLY,   ///< Deregister UI/captive portal endpoints, keep API
+    WIFI_HTTP_DISABLED,   ///< Deregister all library-registered endpoints
+} wifi_http_post_prov_mode_t;
+
+// =============================================================================
 // Configuration
 // =============================================================================
 
@@ -397,7 +441,6 @@ typedef esp_err_t (*wifi_mgr_http_hook_t)(httpd_req_t *req, void *ctx);
  * Cấu hình HTTP REST API. Có thể dùng httpd có sẵn hoặc tạo mới.
  */
 typedef struct {
-    bool enable;                ///< Enable HTTP interface
     httpd_handle_t httpd;       ///< Existing httpd handle, NULL = create new
     const char *api_base_path;  ///< API base path, default "/api/wifi"
     bool enable_auth;           ///< Enable Basic Auth
@@ -449,23 +492,31 @@ typedef struct {
     // Default networks (fallback if NVS empty)
     wifi_network_t *default_networks;   ///< Default networks array
     size_t default_network_count;       ///< Number of default networks
-    
+
     // Default variables
     wifi_var_t *default_vars;           ///< Default variables array
     size_t default_var_count;           ///< Number of default variables
-    
-    // Retry config
+
+    // Retry / reconnect
     uint8_t max_retry_per_network;      ///< Max retry per network, default 3
     uint32_t retry_interval_ms;         ///< Initial retry interval (ms), default 5000
     uint32_t retry_max_interval_ms;     ///< Max retry interval for exponential backoff (ms), default 60000
     bool auto_reconnect;                ///< Auto reconnect on disconnect, default true
-    
-    // SoftAP default config
+    uint16_t max_reconnect_attempts;    ///< Max reconnect attempts after post-connect disconnect (0 = infinite)
+    wifi_reconnect_exhausted_action_t on_reconnect_exhausted;  ///< Action when max_reconnect_attempts reached
+
+    // Provisioning lifecycle
+    wifi_provisioning_mode_t provisioning_mode;     ///< Controls when provisioning interfaces (AP/BLE) start
+    bool stop_provisioning_on_connect;              ///< Stop AP/BLE when STA gets IP
+    uint32_t provisioning_teardown_delay_ms;        ///< Delay before teardown (lets UI show result), ms
+
+    // HTTP post-provisioning behavior
+    wifi_http_post_prov_mode_t http_post_prov_mode; ///< What to do with HTTP after provisioning stops
+
+    // SoftAP config
     wifi_mgr_ap_config_t default_ap;    ///< Default AP config
     bool always_use_ap_defaults;        ///< Always use default_ap, ignore NVS-saved AP config
-    bool enable_captive_portal;         ///< Start AP if all networks fail
-    bool stop_ap_on_connect;            ///< Stop AP when STA connected successfully
-    bool start_ap_on_init;              ///< Start AP immediately on init (AP+STA mode)
+    bool enable_ap;                     ///< Enable Soft AP as a provisioning method
 
     // Callbacks
     wifi_mgr_var_validator_t on_before_var_set;  ///< Optional variable validation callback
@@ -499,7 +550,8 @@ typedef struct {
  *         {"MyWiFi", "password", 10},
  *     },
  *     .default_network_count = 1,
- *     .http = { .enable = true },
+ *     .provisioning_mode = WIFI_PROV_ON_FAILURE,
+ *     .enable_ap = true,
  * });
  * @endcode
  */
@@ -572,6 +624,18 @@ esp_err_t wifi_manager_get_status(wifi_status_t *status);
  * @endcode
  */
 httpd_handle_t wifi_manager_get_httpd(void);
+
+/**
+ * @brief Stop the HTTP server
+ *
+ * Explicitly tear down the HTTPD server (only when the library owns it).
+ * Intended for MANUAL provisioning mode with WIFI_HTTP_DISABLED where the
+ * integrator controls the full lifecycle. Will refuse if provisioning is
+ * active or if the reconnect constraint requires the server to stay alive.
+ *
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if server cannot be stopped
+ */
+esp_err_t wifi_manager_stop_http(void);
 
 // =============================================================================
 // Network Management API

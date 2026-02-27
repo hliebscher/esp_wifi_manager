@@ -404,6 +404,27 @@ esp_err_t wifi_mgr_ble_backend_init(const char *device_name)
     return ESP_OK;
 }
 
+esp_err_t wifi_mgr_ble_backend_start(void)
+{
+    start_advertising();
+    return ESP_OK;
+}
+
+esp_err_t wifi_mgr_ble_backend_stop(void)
+{
+    // Disconnect active client
+    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        for (int i = 0; i < 50 && s_conn_handle != BLE_HS_CONN_HANDLE_NONE; i++) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    // Stop advertising (do NOT reset GATT or stop nimble port)
+    ble_gap_adv_stop();
+    return ESP_OK;
+}
+
 esp_err_t wifi_mgr_ble_backend_deinit(void)
 {
     // Disconnect active client

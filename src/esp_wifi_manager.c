@@ -7,6 +7,7 @@
 #include "esp_bus.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "lwip/inet.h"
 #include <string.h>
@@ -60,6 +61,93 @@ static void set_default_ap_config(wifi_mgr_ap_config_t *ap)
     strncpy(ap->gateway, CONFIG_WIFI_MGR_AP_IP, sizeof(ap->gateway) - 1);
     strncpy(ap->dhcp_start, "192.168.4.2", sizeof(ap->dhcp_start) - 1);
     strncpy(ap->dhcp_end, "192.168.4.20", sizeof(ap->dhcp_end) - 1);
+}
+
+static void teardown_timer_callback(TimerHandle_t timer)
+{
+    (void)timer;
+    wifi_mgr_send_event(WM_INT_EVT_TEARDOWN_TIMER);
+}
+
+// =============================================================================
+// Provisioning Orchestration
+// =============================================================================
+
+void wifi_mgr_start_provisioning(void)
+{
+    if (!g_wifi_mgr || g_wifi_mgr->provisioning_active) return;
+
+    ESP_LOGI(TAG, "Starting provisioning interfaces");
+
+    // Start AP if enabled and not already active
+    if (g_wifi_mgr->config.enable_ap && !g_wifi_mgr->ap_active) {
+        wifi_manager_start_ap(NULL);
+    }
+
+    // Start BLE if enabled and not already active
+#ifdef CONFIG_WIFI_MGR_ENABLE_BLE
+    if (g_wifi_mgr->config.ble.enable && !g_wifi_mgr->ble_active) {
+        if (wifi_mgr_ble_start() == ESP_OK) {
+            g_wifi_mgr->ble_active = true;
+        }
+    }
+#endif
+
+    // Re-register provisioning HTTP handlers if needed
+    if (!g_wifi_mgr->provisioning_handlers_registered && g_wifi_mgr->httpd) {
+        wifi_mgr_http_register_provisioning_handlers();
+    }
+
+    g_wifi_mgr->provisioning_active = true;
+    esp_bus_emit(WIFI_MODULE, WIFI_MGR_EVT_PROVISIONING_STARTED, NULL, 0);
+}
+
+void wifi_mgr_stop_provisioning(void)
+{
+    if (!g_wifi_mgr || !g_wifi_mgr->provisioning_active) return;
+
+    ESP_LOGI(TAG, "Stopping provisioning interfaces");
+
+    // Stop AP if active
+    if (g_wifi_mgr->ap_active) {
+        wifi_mgr_stop_ap_mode();
+    }
+
+    // Stop BLE if active
+#ifdef CONFIG_WIFI_MGR_ENABLE_BLE
+    if (g_wifi_mgr->ble_active) {
+        wifi_mgr_ble_stop();
+        g_wifi_mgr->ble_active = false;
+    }
+#endif
+
+    // Transition HTTP per post-prov mode
+    wifi_mgr_http_transition_post_prov(g_wifi_mgr->config.http_post_prov_mode);
+
+    // Auto-teardown HTTPD server if conditions met:
+    // - Library owns it
+    // - Mode is WIFI_HTTP_DISABLED
+    // - Mode is WHEN_UNPROVISIONED or MANUAL
+    // - No reconnect constraint (enable_ap && on_reconnect_exhausted == PROVISION && max_reconnect_attempts > 0)
+    if (g_wifi_mgr->config.http_post_prov_mode == WIFI_HTTP_DISABLED &&
+        g_wifi_mgr->httpd_owned && g_wifi_mgr->httpd) {
+        bool reconnect_constraint = (g_wifi_mgr->config.enable_ap &&
+            g_wifi_mgr->config.on_reconnect_exhausted == WIFI_ON_RECONNECT_EXHAUSTED_PROVISION &&
+            g_wifi_mgr->config.max_reconnect_attempts > 0);
+        bool can_teardown = !reconnect_constraint &&
+            (g_wifi_mgr->config.provisioning_mode == WIFI_PROV_WHEN_UNPROVISIONED ||
+             g_wifi_mgr->config.provisioning_mode == WIFI_PROV_MANUAL);
+
+        if (can_teardown) {
+            httpd_stop(g_wifi_mgr->httpd);
+            g_wifi_mgr->httpd = NULL;
+            g_wifi_mgr->httpd_owned = false;
+            ESP_LOGI(TAG, "HTTPD server auto-teardown complete");
+        }
+    }
+
+    g_wifi_mgr->provisioning_active = false;
+    esp_bus_emit(WIFI_MODULE, WIFI_MGR_EVT_PROVISIONING_STOPPED, NULL, 0);
 }
 
 // =============================================================================
@@ -262,6 +350,8 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
         {WIFI_MGR_EVT_NETWORK_ADDED, "wifi_network_t", "Network added"},
         {WIFI_MGR_EVT_NETWORK_REMOVED, "string", "Network removed"},
         {WIFI_MGR_EVT_VAR_CHANGED, "wifi_var_t", "Variable changed"},
+        {WIFI_MGR_EVT_PROVISIONING_STARTED, "none", "Provisioning started"},
+        {WIFI_MGR_EVT_PROVISIONING_STOPPED, "none", "Provisioning stopped"},
     };
     
     esp_bus_module_t bus_cfg = {
@@ -280,9 +370,13 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
         goto cleanup;
     }
 
-    // Init HTTP interface if enabled
-    if (config && config->http.enable) {
-        g_wifi_mgr->httpd = config->http.httpd;
+    // TODO: come back and think through if `config && config->http.httpd` means we necessarily should init
+    // Init HTTP interface: start if AP enabled or post-prov mode needs it
+    bool need_http = (config && config->enable_ap) ||
+                     (config && config->http_post_prov_mode != WIFI_HTTP_DISABLED) ||
+                     (config && config->http.httpd);  // User provided httpd
+    if (need_http) {
+        g_wifi_mgr->httpd = config ? config->http.httpd : NULL;
         ret = wifi_mgr_http_init();
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "HTTP init failed: %s", esp_err_to_name(ret));
@@ -319,6 +413,10 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
         goto cleanup;
     }
 
+    // Create provisioning teardown timer (one-shot, dormant until needed)
+    g_wifi_mgr->teardown_timer = xTimerCreate("prov_td", pdMS_TO_TICKS(1000),
+                                               pdFALSE, NULL, teardown_timer_callback);
+
     ESP_LOGI(TAG, "WiFi Manager initialized, %zu networks configured", g_wifi_mgr->network_count);
     return ESP_OK;
     
@@ -337,13 +435,29 @@ esp_err_t wifi_manager_deinit(bool deinit_wifi)
 {
     if (!g_wifi_mgr) return ESP_ERR_INVALID_STATE;
     
+    // Cancel teardown timer if running
+    if (g_wifi_mgr->teardown_timer) {
+        xTimerStop(g_wifi_mgr->teardown_timer, 0);
+        xTimerDelete(g_wifi_mgr->teardown_timer, portMAX_DELAY);
+        g_wifi_mgr->teardown_timer = NULL;
+    }
+
     // Stop task
     wifi_mgr_send_event(WM_INT_EVT_STOP);
     vTaskDelay(pdMS_TO_TICKS(100));
 
 #ifdef CONFIG_WIFI_MGR_ENABLE_BLE
+    // Stop BLE advertising before full deinit
+    if (g_wifi_mgr->ble_active) {
+        wifi_mgr_ble_stop();
+        g_wifi_mgr->ble_active = false;
+    }
     wifi_mgr_ble_deinit();
 #endif
+
+    // Reset provisioning state
+    g_wifi_mgr->provisioning_active = false;
+    g_wifi_mgr->reconnect_attempt_count = 0;
     wifi_mgr_mdns_deinit();
     wifi_mgr_http_deinit();
     esp_bus_unreg(WIFI_MODULE);
@@ -503,16 +617,36 @@ static void wifi_mgr_task(void *arg)
         if (xQueueReceive(g_wifi_mgr->queue, &evt, pdMS_TO_TICKS(1000)) == pdTRUE) {
             switch (evt.type) {
                 case WM_INT_EVT_START:
-                    // Start AP immediately if configured
-                    if (g_wifi_mgr->config.start_ap_on_init) {
-                        ESP_LOGI(TAG, "Starting AP on init");
-                        wifi_manager_start_ap(NULL);
-                    }
-                    // Start auto-connect if networks configured, else start captive portal
-                    if (g_wifi_mgr->network_count > 0) {
-                        wifi_mgr_start_connect_sequence();
-                    } else if (g_wifi_mgr->config.enable_captive_portal && !g_wifi_mgr->ap_active) {
-                        wifi_manager_start_ap(NULL);
+                    // Provisioning mode state machine
+                    switch (g_wifi_mgr->config.provisioning_mode) {
+                        case WIFI_PROV_ALWAYS:
+                            wifi_mgr_start_provisioning();
+                            if (g_wifi_mgr->network_count > 0) {
+                                wifi_mgr_start_connect_sequence();
+                            }
+                            break;
+
+                        case WIFI_PROV_ON_FAILURE:
+                            if (g_wifi_mgr->network_count == 0) {
+                                wifi_mgr_start_provisioning();
+                            } else {
+                                wifi_mgr_start_connect_sequence();
+                            }
+                            break;
+
+                        case WIFI_PROV_WHEN_UNPROVISIONED:
+                            if (g_wifi_mgr->network_count == 0) {
+                                wifi_mgr_start_provisioning();
+                            } else {
+                                wifi_mgr_start_connect_sequence();
+                            }
+                            break;
+
+                        case WIFI_PROV_MANUAL:
+                            if (g_wifi_mgr->network_count > 0) {
+                                wifi_mgr_start_connect_sequence();
+                            }
+                            break;
                     }
                     break;
                     
@@ -561,20 +695,36 @@ static void wifi_mgr_task(void *arg)
                     strncpy(disc.ssid, evt.data.disconnect.ssid, sizeof(disc.ssid) - 1);
                     esp_bus_emit(WIFI_MODULE, WIFI_MGR_EVT_DISCONNECTED, &disc, sizeof(disc));
 
-                    // Auto reconnect if enabled and not in AP mode
-                    if (g_wifi_mgr->config.auto_reconnect && !g_wifi_mgr->ap_active && !g_wifi_mgr->connecting) {
-                        // Exponential backoff for reconnect
-                        uint32_t base = g_wifi_mgr->config.retry_interval_ms;
-                        uint32_t max_delay = g_wifi_mgr->config.retry_max_interval_ms;
-                        uint32_t delay = base << g_wifi_mgr->retry_count;
-                        if (delay > max_delay || delay < base) delay = max_delay;
+                    // Auto reconnect with reconnect exhaustion
+                    if (g_wifi_mgr->config.auto_reconnect && !g_wifi_mgr->connecting) {
+                        g_wifi_mgr->reconnect_attempt_count++;
 
-                        ESP_LOGI(TAG, "Auto-reconnect in %lu ms (attempt %d)",
-                                 (unsigned long)delay, g_wifi_mgr->retry_count + 1);
-                        g_wifi_mgr->retry_count++;
+                        // Check reconnect exhaustion
+                        if (g_wifi_mgr->config.max_reconnect_attempts > 0 &&
+                            g_wifi_mgr->reconnect_attempt_count >= g_wifi_mgr->config.max_reconnect_attempts) {
 
-                        vTaskDelay(pdMS_TO_TICKS(delay));
-                        if (!g_wifi_mgr->ap_active) {
+                            if (g_wifi_mgr->config.on_reconnect_exhausted == WIFI_ON_RECONNECT_EXHAUSTED_RESTART) {
+                                ESP_LOGW(TAG, "Reconnect attempts exhausted, restarting device");
+                                esp_restart();
+                            } else {
+                                // PROVISION: start provisioning and reset counters
+                                ESP_LOGW(TAG, "Reconnect attempts exhausted, starting provisioning");
+                                g_wifi_mgr->reconnect_attempt_count = 0;
+                                g_wifi_mgr->retry_count = 0;
+                                wifi_mgr_send_event(WM_INT_EVT_START_PROVISIONING);
+                            }
+                        } else {
+                            // Normal exponential backoff reconnect
+                            uint32_t base = g_wifi_mgr->config.retry_interval_ms;
+                            uint32_t max_delay = g_wifi_mgr->config.retry_max_interval_ms;
+                            uint32_t delay = base << g_wifi_mgr->retry_count;
+                            if (delay > max_delay || delay < base) delay = max_delay;
+
+                            ESP_LOGI(TAG, "Auto-reconnect in %lu ms (attempt %d)",
+                                     (unsigned long)delay, g_wifi_mgr->retry_count + 1);
+                            g_wifi_mgr->retry_count++;
+
+                            vTaskDelay(pdMS_TO_TICKS(delay));
                             wifi_mgr_start_connect_sequence();
                         }
                     }
@@ -599,10 +749,21 @@ static void wifi_mgr_task(void *arg)
                     esp_bus_emit(WIFI_MODULE, WIFI_MGR_EVT_CONNECTED, &conn, sizeof(conn));
                     esp_bus_emit(WIFI_MODULE, WIFI_MGR_EVT_GOT_IP, &evt.data.got_ip.ip_info, sizeof(esp_netif_ip_info_t));
 
-                    // Stop AP if configured and AP is active
-                    if (g_wifi_mgr->config.stop_ap_on_connect && g_wifi_mgr->ap_active) {
-                        ESP_LOGI(TAG, "Stopping AP after successful connection");
-                        wifi_mgr_stop_ap_mode();
+                    // Reset reconnect counter on successful connection
+                    g_wifi_mgr->reconnect_attempt_count = 0;
+
+                    // Stop provisioning if configured and provisioning is active
+                    if (g_wifi_mgr->config.stop_provisioning_on_connect && g_wifi_mgr->provisioning_active) {
+                        if (g_wifi_mgr->config.provisioning_teardown_delay_ms > 0) {
+                            // Start teardown timer
+                            xTimerChangePeriod(g_wifi_mgr->teardown_timer,
+                                pdMS_TO_TICKS(g_wifi_mgr->config.provisioning_teardown_delay_ms), 0);
+                            xTimerStart(g_wifi_mgr->teardown_timer, 0);
+                            ESP_LOGI(TAG, "Provisioning teardown in %lu ms",
+                                     (unsigned long)g_wifi_mgr->config.provisioning_teardown_delay_ms);
+                        } else {
+                            wifi_mgr_stop_provisioning();
+                        }
                     }
                     break;
                 }
@@ -642,7 +803,17 @@ static void wifi_mgr_task(void *arg)
                 case WM_INT_EVT_STOP_AP_REQUEST:
                     wifi_manager_stop_ap();
                     break;
-                    
+
+                case WM_INT_EVT_TEARDOWN_TIMER:
+                    ESP_LOGI(TAG, "Teardown timer expired");
+                    wifi_mgr_stop_provisioning();
+                    break;
+
+                case WM_INT_EVT_START_PROVISIONING:
+                    ESP_LOGI(TAG, "Starting provisioning from reconnect exhaustion");
+                    wifi_mgr_start_provisioning();
+                    break;
+
                 case WM_INT_EVT_STOP:
                     ESP_LOGI(TAG, "Task stopped");
                     vTaskDelete(NULL);

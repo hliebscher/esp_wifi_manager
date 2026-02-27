@@ -109,6 +109,20 @@ esp_err_t wifi_mgr_ble_backend_init(const char *device_name);
  */
 esp_err_t wifi_mgr_ble_backend_deinit(void);
 
+/**
+ * @brief Start BLE advertising (without full stack init).
+ * Requires that the backend has been initialized via wifi_mgr_ble_backend_init().
+ * @return ESP_OK on success
+ */
+esp_err_t wifi_mgr_ble_backend_start(void);
+
+/**
+ * @brief Stop BLE advertising and disconnect active client (without full stack deinit).
+ * The GATT service and command task remain alive.
+ * @return ESP_OK on success
+ */
+esp_err_t wifi_mgr_ble_backend_stop(void);
+
 #ifdef __cplusplus
 }
 #endif

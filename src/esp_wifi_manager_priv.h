@@ -15,6 +15,7 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -117,6 +118,8 @@ typedef enum {
     WM_INT_EVT_DISCONNECT_REQUEST,  // Manual disconnect request
     WM_INT_EVT_START_AP_REQUEST,    // Manual start AP request
     WM_INT_EVT_STOP_AP_REQUEST,     // Manual stop AP request
+    WM_INT_EVT_TEARDOWN_TIMER,      // Provisioning teardown delay expired
+    WM_INT_EVT_START_PROVISIONING,  // Start provisioning from reconnect exhaustion
     WM_INT_EVT_STOP,                // Stop task
 } wifi_mgr_internal_evt_t;
 
@@ -151,9 +154,21 @@ typedef struct {
     wifi_state_t state;
     bool initialized;
     bool ap_active;
+    bool ble_active;                // BLE advertising currently running
+    bool provisioning_active;       // Provisioning interfaces (AP/BLE) currently running
     bool connecting;                // Currently in connect sequence
     int64_t connect_time;           // Connection start time
-    
+
+    // Reconnect exhaustion
+    uint16_t reconnect_attempt_count;  // Counter for post-connect reconnect exhaustion
+
+    // Provisioning teardown timer
+    TimerHandle_t teardown_timer;      // FreeRTOS one-shot timer for non-blocking teardown delay
+
+    // HTTP handler tracking
+    bool http_handlers_registered;           // Prevent double register/unregister of all handlers
+    bool provisioning_handlers_registered;   // Track provisioning-specific endpoints
+
     // Config
     wifi_manager_config_t config;
     
@@ -235,6 +250,35 @@ void wifi_mgr_start_connect_sequence(void);
 // AP mode control (called from task)
 void wifi_mgr_start_ap_mode(void);
 void wifi_mgr_stop_ap_mode(void);
+
+// =============================================================================
+// Provisioning Orchestration
+// =============================================================================
+
+// Start all enabled provisioning interfaces (AP + BLE) per config
+void wifi_mgr_start_provisioning(void);
+
+// Stop all provisioning interfaces, transition HTTP per post-prov mode
+void wifi_mgr_stop_provisioning(void);
+
+// =============================================================================
+// BLE Start/Stop (advertising control without full init/deinit)
+// =============================================================================
+
+esp_err_t wifi_mgr_ble_start(void);
+esp_err_t wifi_mgr_ble_stop(void);
+
+// =============================================================================
+// HTTP Provisioning Handlers
+// =============================================================================
+
+// Register/unregister only the provisioning-specific HTTP handlers
+// (captive portal detection, simple page, WebUI routes)
+esp_err_t wifi_mgr_http_register_provisioning_handlers(void);
+esp_err_t wifi_mgr_http_unregister_provisioning_handlers(void);
+
+// Transition HTTP to post-provisioning mode
+void wifi_mgr_http_transition_post_prov(wifi_http_post_prov_mode_t mode);
 
 // =============================================================================
 // esp_bus Handler (esp_wifi_manager_bus.c)

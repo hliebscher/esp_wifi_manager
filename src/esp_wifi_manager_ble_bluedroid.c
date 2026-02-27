@@ -395,6 +395,24 @@ esp_err_t wifi_mgr_ble_backend_init(const char *device_name)
     return ESP_OK;
 }
 
+esp_err_t wifi_mgr_ble_backend_start(void)
+{
+    esp_ble_gap_start_advertising(&adv_params);
+    return ESP_OK;
+}
+
+esp_err_t wifi_mgr_ble_backend_stop(void)
+{
+    // Disconnect active client
+    if (s_profile.connected) {
+        esp_ble_gap_disconnect(s_profile.remote_bda);
+    }
+
+    // Stop advertising (do NOT unregister GATT app or tear down stack)
+    esp_ble_gap_stop_advertising();
+    return ESP_OK;
+}
+
 esp_err_t wifi_mgr_ble_backend_deinit(void)
 {
     // Disconnect active client

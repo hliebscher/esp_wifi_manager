@@ -55,9 +55,13 @@ static uint32_t calc_backoff_delay(int retry)
 void wifi_mgr_start_connect_sequence(void)
 {
     if (!g_wifi_mgr || g_wifi_mgr->network_count == 0) {
-        if (g_wifi_mgr && g_wifi_mgr->config.enable_captive_portal) {
-            ESP_LOGI(TAG, "No networks, starting captive portal");
-            wifi_manager_start_ap(NULL);
+        if (g_wifi_mgr &&
+            (g_wifi_mgr->config.provisioning_mode == WIFI_PROV_ON_FAILURE ||
+             g_wifi_mgr->config.provisioning_mode == WIFI_PROV_WHEN_UNPROVISIONED)) {
+            if (!g_wifi_mgr->provisioning_active) {
+                ESP_LOGI(TAG, "No networks, starting provisioning");
+                wifi_mgr_start_provisioning();
+            }
         }
         return;
     }
@@ -120,10 +124,11 @@ void wifi_mgr_start_connect_sequence(void)
     ESP_LOGW(TAG, "Failed to connect to any network");
     g_wifi_mgr->state = WIFI_STATE_DISCONNECTED;
 
-    // Start captive portal if enabled and AP not already running
-    if (g_wifi_mgr->config.enable_captive_portal && !g_wifi_mgr->ap_active) {
-        ESP_LOGI(TAG, "Starting captive portal");
-        wifi_manager_start_ap(NULL);
+    // Start provisioning on failure if mode is ON_FAILURE and not already provisioning
+    if (g_wifi_mgr->config.provisioning_mode == WIFI_PROV_ON_FAILURE &&
+        !g_wifi_mgr->provisioning_active) {
+        ESP_LOGI(TAG, "All networks failed, starting provisioning");
+        wifi_mgr_start_provisioning();
     }
 }
 

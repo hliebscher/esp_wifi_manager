@@ -5,7 +5,7 @@
  * This example demonstrates basic usage of the WiFi Manager component:
  * - Initialize with default networks
  * - Enable HTTP REST API for configuration
- * - Enable captive portal for initial setup
+ * - Provisioning mode: AP starts when no networks or all connections fail
  * - Subscribe to WiFi events
  */
 
@@ -126,12 +126,14 @@ void app_main(void)
             .dhcp_start = "192.168.4.2",
             .dhcp_end = "192.168.4.20",
         },
-        .enable_captive_portal = true,   // Start AP if no networks available
-        .stop_ap_on_connect = true,      // Stop AP after successful connection
+        // Provisioning: start AP+HTTP when no networks or all fail
+        .provisioning_mode = WIFI_PROV_ON_FAILURE,
+        .stop_provisioning_on_connect = true,
+        .provisioning_teardown_delay_ms = 5000,  // 5s grace period before stopping AP
+        .enable_ap = true,
 
         // HTTP REST API configuration
         .http = {
-            .enable = true,
             .httpd = NULL,               // Create new HTTP server
             .api_base_path = "/api/wifi",
             .enable_auth = false,        // No authentication for this example

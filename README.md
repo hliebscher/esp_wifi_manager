@@ -104,14 +104,11 @@ void app_main(void)
         },
         .default_network_count = 2,
 
-        // Enable HTTP REST API
-        .http = {
-            .enable = true,
-            .api_base_path = "/api/wifi",
-        },
-
-        // Enable captive portal if no networks available
-        .enable_captive_portal = true,
+        // Start AP provisioning when no networks saved or all fail
+        .provisioning_mode = WIFI_PROV_ON_FAILURE,
+        .stop_provisioning_on_connect = true,
+        .provisioning_teardown_delay_ms = 5000,
+        .enable_ap = true,
     });
 
     // Wait for connection (30 second timeout)
@@ -180,12 +177,22 @@ wifi_manager_config_t config = {
         .password = "",
         .ip = "192.168.4.1",
     },
-    .enable_captive_portal = true,
-    .stop_ap_on_connect = true,
+
+    // Provisioning behavior
+    .provisioning_mode = WIFI_PROV_ON_FAILURE,
+    .stop_provisioning_on_connect = true,
+    .provisioning_teardown_delay_ms = 5000,
+    .enable_ap = true,
+
+    // Reconnect exhaustion
+    .max_reconnect_attempts = 10,          // 0 = infinite
+    .on_reconnect_exhausted = WIFI_RECONNECT_PROVISION, // or WIFI_RECONNECT_RESTART
+
+    // HTTP post-provisioning mode
+    .http_post_prov_mode = WIFI_HTTP_API_ONLY,  // FULL, API_ONLY, or DISABLED
 
     // HTTP interface
     .http = {
-        .enable = true,
         .api_base_path = "/api/wifi",
         .enable_auth = true,
         .auth_username = "admin",
@@ -207,6 +214,30 @@ wifi_manager_config_t config = {
 
 wifi_manager_init(&config);
 ```
+
+### Provisioning Modes
+
+The `provisioning_mode` field controls when the WiFi Manager automatically starts provisioning interfaces (AP and/or BLE):
+
+| Mode | Behavior |
+|------|----------|
+| `WIFI_PROV_ALWAYS` | AP/BLE start at init and remain active, even after STA connects |
+| `WIFI_PROV_ON_FAILURE` | Start provisioning when no networks are saved or all saved networks fail to connect |
+| `WIFI_PROV_WHEN_UNPROVISIONED` | Start provisioning only if no networks exist in NVS |
+| `WIFI_PROV_MANUAL` | Never auto-start provisioning; the application calls `wifi_manager_start_ap()` explicitly (e.g., on button press) |
+
+### Post-Connect Behavior
+
+**Provisioning teardown:** When `stop_provisioning_on_connect` is `true`, the manager stops AP/BLE after the STA obtains an IP address. The `provisioning_teardown_delay_ms` value adds a delay before teardown so the Web UI can display connection results to the user.
+
+**Reconnect exhaustion:** After a post-connect disconnect, the manager retries up to `max_reconnect_attempts` times (0 = infinite). When attempts are exhausted, `on_reconnect_exhausted` controls what happens:
+- `WIFI_RECONNECT_PROVISION` — Re-enter provisioning mode so the user can reconfigure
+- `WIFI_RECONNECT_RESTART` — Reboot the device via `esp_restart()`
+
+**HTTP post-provisioning mode:** The `http_post_prov_mode` field controls the HTTP server after provisioning stops:
+- `WIFI_HTTP_FULL` — Keep the full HTTP server running (Web UI + API)
+- `WIFI_HTTP_API_ONLY` — Keep only REST API endpoints, remove Web UI and captive portal routes
+- `WIFI_HTTP_DISABLED` — Stop the HTTP server entirely
 
 ## C API Reference
 
@@ -245,8 +276,9 @@ esp_err_t wifi_manager_del_var(const char *key);
 // Factory reset
 esp_err_t wifi_manager_factory_reset(void);
 
-// Shared HTTP server (for adding custom endpoints)
+// HTTP server management
 httpd_handle_t wifi_manager_get_httpd(void);
+esp_err_t wifi_manager_stop_http(void);  // Stop HTTP server (if library-owned and provisioning not active)
 ```
 
 ## esp_bus Integration
@@ -265,6 +297,8 @@ esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_GOT_IP), on_got_ip, NULL);
 esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_SCAN_DONE), on_scan_done, NULL);
 esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_NETWORK_ADDED), on_network_added, NULL);
 esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_VAR_CHANGED), on_var_changed, NULL);
+esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_PROVISIONING_STARTED), on_prov_started, NULL);
+esp_bus_sub(WIFI_EVT(WIFI_MGR_EVT_PROVISIONING_STOPPED), on_prov_stopped, NULL);
 ```
 
 ## CLI Commands
@@ -645,35 +679,82 @@ curl -X PUT http://192.168.4.1/api/wifi/vars/device_name \
 ## Connection Flow
 
 ```
-boot → load saved networks → try connect →
-  ├── success → emit CONNECTED event → emit GOT_IP event
-  └── fail all → start captive portal (if enabled)
+boot → evaluate provisioning_mode →
+  ├── WIFI_PROV_ALWAYS → start provisioning + try connect in parallel
+  ├── WIFI_PROV_MANUAL → try connect only (user starts provisioning explicitly)
+  ├── WIFI_PROV_WHEN_UNPROVISIONED →
+  │     ├── no saved networks → start provisioning
+  │     └── has saved networks → try connect
+  └── WIFI_PROV_ON_FAILURE →
+        ├── no saved networks → start provisioning
+        └── has saved networks → try connect →
+              ├── success → emit CONNECTED → GOT_IP
+              └── all fail → start provisioning
 
-Auto-connect logic:
+Try connect:
 1. Load saved networks from NVS (sorted by priority DESC)
 2. For each network:
-   a. Try connect (max_retry_per_network times)
+   a. Attempt connection (max_retry_per_network times)
    b. Exponential backoff between retries
-   c. If success → done
-   d. If fail → try next network
-3. If all fail and captive_portal enabled → start AP
-4. If connected and disconnected → auto-reconnect if enabled
+   c. Success → done
+   d. Fail → try next network
+
+Post-connect disconnect:
+1. Auto-reconnect up to max_reconnect_attempts (0 = infinite)
+2. If exhausted → on_reconnect_exhausted action:
+   a. WIFI_RECONNECT_PROVISION → re-enter provisioning
+   b. WIFI_RECONNECT_RESTART → esp_restart()
+
+Provisioning teardown (when stop_provisioning_on_connect = true):
+1. STA gets IP → wait provisioning_teardown_delay_ms
+2. Emit PROVISIONING_STOPPED → stop AP/BLE
+3. Transition HTTP per http_post_prov_mode
 ```
 
 ## Captive Portal
 
-When no networks are configured or all connections fail, the device starts a SoftAP with captive portal:
+When provisioning starts with `enable_ap = true`, the device starts a SoftAP with captive portal:
 
 1. Connect to AP (e.g., "ESP32-AABBCC")
 2. OS automatically opens captive portal popup
 3. Configure WiFi via Web UI or REST API
-4. Device connects and AP stops (if `stop_ap_on_connect = true`)
+4. Device connects and provisioning stops (if `stop_provisioning_on_connect = true`), after `provisioning_teardown_delay_ms`
 
 Supported captive portal detection:
 - Android: `/generate_204`, `/gen_204`
 - iOS/macOS: `/hotspot-detect.html`
 - Windows: `/ncsi.txt`, `/connecttest.txt`
 - Firefox: `/success.txt`, `/canonical.html`
+
+## Migration from v1.x
+
+The provisioning configuration has been redesigned. The old boolean fields have been replaced with a mode-based system:
+
+| Old Field | New Equivalent |
+|-----------|---------------|
+| `enable_captive_portal = true` | `provisioning_mode = WIFI_PROV_ON_FAILURE, enable_ap = true` |
+| `stop_ap_on_connect = true` | `stop_provisioning_on_connect = true` |
+| `start_ap_on_init = true` | `provisioning_mode = WIFI_PROV_ALWAYS, enable_ap = true` |
+| `http.enable = true` | Removed -- HTTP starts automatically when provisioning or `http_post_prov_mode` requires it |
+
+**Before (v1.x):**
+```c
+wifi_manager_init(&(wifi_manager_config_t){
+    .enable_captive_portal = true,
+    .stop_ap_on_connect = true,
+    .http = { .enable = true },
+});
+```
+
+**After (v2.x):**
+```c
+wifi_manager_init(&(wifi_manager_config_t){
+    .provisioning_mode = WIFI_PROV_ON_FAILURE,
+    .stop_provisioning_on_connect = true,
+    .provisioning_teardown_delay_ms = 5000,
+    .enable_ap = true,
+});
+```
 
 ## Dependencies
 

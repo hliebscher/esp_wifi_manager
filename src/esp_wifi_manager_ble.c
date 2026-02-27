@@ -518,6 +518,26 @@ esp_err_t wifi_mgr_ble_init(void)
     return ESP_OK;
 }
 
+esp_err_t wifi_mgr_ble_start(void)
+{
+    if (!g_wifi_mgr) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "Starting BLE advertising");
+    return wifi_mgr_ble_backend_start();
+}
+
+esp_err_t wifi_mgr_ble_stop(void)
+{
+    if (!g_wifi_mgr) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "Stopping BLE advertising");
+    return wifi_mgr_ble_backend_stop();
+}
+
 esp_err_t wifi_mgr_ble_deinit(void)
 {
     ESP_LOGI(TAG, "Deinitializing BLE interface");
@@ -529,6 +549,16 @@ esp_err_t wifi_mgr_ble_deinit(void)
 #else // CONFIG_WIFI_MGR_ENABLE_BLE
 
 esp_err_t wifi_mgr_ble_init(void)
+{
+    return ESP_OK;
+}
+
+esp_err_t wifi_mgr_ble_start(void)
+{
+    return ESP_OK;
+}
+
+esp_err_t wifi_mgr_ble_stop(void)
 {
     return ESP_OK;
 }
