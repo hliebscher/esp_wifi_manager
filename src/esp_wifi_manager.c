@@ -142,10 +142,17 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
         wifi_mgr_nvs_save_vars(g_wifi_mgr->vars, g_wifi_mgr->var_count);
     }
     
-    // Load AP config: config->default_ap always wins if provided,
+    // Load AP config: if default_ap provided, use it (optionally ignoring NVS);
     // otherwise fall back to NVS, then built-in defaults
     if (config && config->default_ap.ssid[0]) {
-        memcpy(&g_wifi_mgr->ap_config, &config->default_ap, sizeof(wifi_mgr_ap_config_t));
+        if (config->always_use_ap_defaults) {
+            memcpy(&g_wifi_mgr->ap_config, &config->default_ap, sizeof(wifi_mgr_ap_config_t));
+        } else {
+            ret = wifi_mgr_nvs_load_ap_config(&g_wifi_mgr->ap_config);
+            if (ret != ESP_OK) {
+                memcpy(&g_wifi_mgr->ap_config, &config->default_ap, sizeof(wifi_mgr_ap_config_t));
+            }
+        }
     } else {
         ret = wifi_mgr_nvs_load_ap_config(&g_wifi_mgr->ap_config);
         if (ret != ESP_OK) {

@@ -462,6 +462,7 @@ typedef struct {
     
     // SoftAP default config
     wifi_mgr_ap_config_t default_ap;    ///< Default AP config
+    bool always_use_ap_defaults;        ///< Always use default_ap, ignore NVS-saved AP config
     bool enable_captive_portal;         ///< Start AP if all networks fail
     bool stop_ap_on_connect;            ///< Stop AP when STA connected successfully
     bool start_ap_on_init;              ///< Start AP immediately on init (AP+STA mode)
