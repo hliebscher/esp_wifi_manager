@@ -823,7 +823,7 @@ static char uri_options_wildcard[64];
 // Register API-only handlers (persist after provisioning stops)
 // =============================================================================
 
-static esp_err_t wifi_mgr_http_register_api_handlers(void)
+esp_err_t wifi_mgr_http_register_api_handlers(void)
 {
     if (!g_wifi_mgr || !g_wifi_mgr->httpd) return ESP_ERR_INVALID_STATE;
 
@@ -1094,13 +1094,7 @@ esp_err_t wifi_mgr_http_init(void)
         g_wifi_mgr->httpd_owned = false;
     }
 
-    // Register API handlers (always)
-    wifi_mgr_http_register_api_handlers();
-
-    // Register provisioning handlers (captive portal, UI)
-    wifi_mgr_http_register_provisioning_handlers();
-
-    ESP_LOGI(TAG, "HTTP handlers registered");
+    ESP_LOGI(TAG, "HTTP server ready (handlers deferred)");
     return ESP_OK;
 }
 

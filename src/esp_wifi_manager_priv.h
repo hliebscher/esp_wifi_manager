@@ -269,8 +269,11 @@ esp_err_t wifi_mgr_ble_start(void);
 esp_err_t wifi_mgr_ble_stop(void);
 
 // =============================================================================
-// HTTP Provisioning Handlers
+// HTTP Handler Registration
 // =============================================================================
+
+// Register/unregister API handlers (scan, networks, connect, etc.)
+esp_err_t wifi_mgr_http_register_api_handlers(void);
 
 // Register/unregister only the provisioning-specific HTTP handlers
 // (captive portal detection, simple page, WebUI routes)

@@ -93,8 +93,9 @@ void wifi_mgr_start_provisioning(void)
     }
 #endif
 
-    // Re-register provisioning HTTP handlers if needed
-    if (!g_wifi_mgr->provisioning_handlers_registered && g_wifi_mgr->httpd) {
+    // Register HTTP handlers for provisioning (both are idempotent)
+    if (g_wifi_mgr->httpd) {
+        wifi_mgr_http_register_api_handlers();
         wifi_mgr_http_register_provisioning_handlers();
     }
 
@@ -370,8 +371,8 @@ esp_err_t wifi_manager_init(const wifi_manager_config_t *config)
         goto cleanup;
     }
 
-    // TODO: come back and think through if `config && config->http.httpd` means we necessarily should init
-    // Init HTTP interface: start if AP enabled or post-prov mode needs it
+    // Init HTTP interface (server setup only, handlers are registered later by
+    // wifi_mgr_start_provisioning() or the happy-path connect logic)
     bool need_http = (config && config->enable_ap) ||
                      (config && config->http_post_prov_mode != WIFI_HTTP_DISABLED) ||
                      (config && config->http.httpd);  // User provided httpd
@@ -764,6 +765,24 @@ static void wifi_mgr_task(void *arg)
                         } else {
                             wifi_mgr_stop_provisioning();
                         }
+                    }
+
+                    // Happy path: connected without provisioning ever starting.
+                    // Register HTTP handlers per http_post_prov_mode and emit the
+                    // event so the app knows it can register its own routes.
+                    if (!g_wifi_mgr->provisioning_active && !g_wifi_mgr->http_handlers_registered && g_wifi_mgr->httpd) {
+                        switch (g_wifi_mgr->config.http_post_prov_mode) {
+                            case WIFI_HTTP_FULL:
+                                wifi_mgr_http_register_api_handlers();
+                                wifi_mgr_http_register_provisioning_handlers();
+                                break;
+                            case WIFI_HTTP_API_ONLY:
+                                wifi_mgr_http_register_api_handlers();
+                                break;
+                            case WIFI_HTTP_DISABLED:
+                                break;
+                        }
+                        esp_bus_emit(WIFI_MODULE, WIFI_MGR_EVT_PROVISIONING_STOPPED, NULL, 0);
                     }
                     break;
                 }
