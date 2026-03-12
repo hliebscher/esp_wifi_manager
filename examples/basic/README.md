@@ -122,6 +122,6 @@ I (xxx) wifi_example: Connected to MyWiFi - Signal: 78% - Uptime: 5000 ms
 - Some phones may disconnect from AP without internet
 
 ### HTTP API not responding
-- Ensure `http.enable = true` in config
+- Ensure `enable_ap = true` and provisioning mode is configured in config
 - Check the device's IP address in serial output
 - Verify firewall isn't blocking the connection

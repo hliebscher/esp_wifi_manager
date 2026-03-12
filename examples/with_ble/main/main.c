@@ -82,12 +82,14 @@ void app_main(void)
             .dhcp_start = "192.168.4.2",
             .dhcp_end = "192.168.4.20",
         },
-        .enable_captive_portal = true,
-        .stop_ap_on_connect = true,
+        // Provisioning: start AP+BLE+HTTP when no networks or all fail
+        .provisioning_mode = WIFI_PROV_ON_FAILURE,
+        .stop_provisioning_on_connect = true,
+        .provisioning_teardown_delay_ms = 5000,
+        .enable_ap = true,
 
         // HTTP REST API configuration
         .http = {
-            .enable = true,
             .httpd = NULL,
             .api_base_path = "/api/wifi",
             .enable_auth = false,

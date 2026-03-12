@@ -15,10 +15,70 @@
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+
+// =============================================================================
+// Configuration Defaults - Typically set via menuconfig
+// =============================================================================
+
+
+#ifndef CONFIG_WIFI_MGR_MAX_NETWORKS
+#define CONFIG_WIFI_MGR_MAX_NETWORKS 5
+#endif
+
+#ifndef CONFIG_WIFI_MGR_MAX_VARS
+#define CONFIG_WIFI_MGR_MAX_VARS 10
+#endif
+
+#ifndef CONFIG_WIFI_MGR_DEFAULT_RETRY
+#define CONFIG_WIFI_MGR_DEFAULT_RETRY 3
+#endif
+
+#ifndef CONFIG_WIFI_MGR_RETRY_INTERVAL_MS
+#define CONFIG_WIFI_MGR_RETRY_INTERVAL_MS 5000
+#endif
+
+#ifndef CONFIG_WIFI_MGR_AP_SSID
+#define CONFIG_WIFI_MGR_AP_SSID "ESP32-Config"
+#endif
+
+#ifndef CONFIG_WIFI_MGR_AP_PASSWORD
+#define CONFIG_WIFI_MGR_AP_PASSWORD ""
+#endif
+
+#ifndef CONFIG_WIFI_MGR_AP_IP
+#define CONFIG_WIFI_MGR_AP_IP "192.168.4.1"
+#endif
+
+#ifndef CONFIG_WIFI_MGR_BLE_DEVICE_NAME
+#define CONFIG_WIFI_MGR_BLE_DEVICE_NAME "ESP32-WiFi-{id}"
+#endif
+
+#ifndef CONFIG_WIFI_MGR_MAX_SCAN_RESULTS
+#define CONFIG_WIFI_MGR_MAX_SCAN_RESULTS 20
+#endif
+
+#ifndef CONFIG_WIFI_MGR_HTTP_MAX_CONTENT_LEN
+#define CONFIG_WIFI_MGR_HTTP_MAX_CONTENT_LEN 2048
+#endif
+
+#ifndef CONFIG_WIFI_MGR_TASK_STACK_SIZE
+#define CONFIG_WIFI_MGR_TASK_STACK_SIZE 4096
+#endif
+
+#ifndef CONFIG_WIFI_MGR_TASK_PRIORITY
+#define CONFIG_WIFI_MGR_TASK_PRIORITY 5
+#endif
+
+#ifndef CONFIG_WIFI_MGR_HTTP_MAX_URI_HANDLERS
+#define CONFIG_WIFI_MGR_HTTP_MAX_URI_HANDLERS 32
+#endif
+
 
 // =============================================================================
 // Constants
@@ -27,8 +87,11 @@ extern "C" {
 #define WIFI_MGR_NVS_NAMESPACE      "wifi_mgr"
 #define WIFI_MGR_MAX_NETWORKS       CONFIG_WIFI_MGR_MAX_NETWORKS
 #define WIFI_MGR_MAX_VARS           CONFIG_WIFI_MGR_MAX_VARS
-#define WIFI_MGR_TASK_STACK_SIZE    4096
-#define WIFI_MGR_TASK_PRIORITY      5
+#define WIFI_MGR_MAX_SCAN_RESULTS   CONFIG_WIFI_MGR_MAX_SCAN_RESULTS
+#define WIFI_MGR_HTTP_MAX_CONTENT   CONFIG_WIFI_MGR_HTTP_MAX_CONTENT_LEN
+#define WIFI_MGR_TASK_STACK_SIZE    CONFIG_WIFI_MGR_TASK_STACK_SIZE
+#define WIFI_MGR_TASK_PRIORITY      CONFIG_WIFI_MGR_TASK_PRIORITY
+#define WIFI_MGR_HTTP_MAX_HANDLERS  CONFIG_WIFI_MGR_HTTP_MAX_URI_HANDLERS
 #define WIFI_MGR_QUEUE_SIZE         10
 
 // Event bits (for sync waits)
@@ -55,6 +118,8 @@ typedef enum {
     WM_INT_EVT_DISCONNECT_REQUEST,  // Manual disconnect request
     WM_INT_EVT_START_AP_REQUEST,    // Manual start AP request
     WM_INT_EVT_STOP_AP_REQUEST,     // Manual stop AP request
+    WM_INT_EVT_TEARDOWN_TIMER,      // Provisioning teardown delay expired
+    WM_INT_EVT_START_PROVISIONING,  // Start provisioning from reconnect exhaustion
     WM_INT_EVT_STOP,                // Stop task
 } wifi_mgr_internal_evt_t;
 
@@ -89,9 +154,21 @@ typedef struct {
     wifi_state_t state;
     bool initialized;
     bool ap_active;
+    bool ble_active;                // BLE advertising currently running
+    bool provisioning_active;       // Provisioning interfaces (AP/BLE) currently running
     bool connecting;                // Currently in connect sequence
     int64_t connect_time;           // Connection start time
-    
+
+    // Reconnect exhaustion
+    uint16_t reconnect_attempt_count;  // Counter for post-connect reconnect exhaustion
+
+    // Provisioning teardown timer
+    TimerHandle_t teardown_timer;      // FreeRTOS one-shot timer for non-blocking teardown delay
+
+    // HTTP handler tracking
+    bool http_handlers_registered;           // Prevent double register/unregister of all handlers
+    bool provisioning_handlers_registered;   // Track provisioning-specific endpoints
+
     // Config
     wifi_manager_config_t config;
     
@@ -125,6 +202,7 @@ typedef struct {
     // Retry state
     int retry_count;
     int current_network_idx;
+    char connected_ssid[32];        // SSID of currently connected network (empty if none)
     
     // Scan results (temporary)
     wifi_scan_result_t *scan_results;
@@ -155,6 +233,7 @@ esp_err_t wifi_mgr_nvs_factory_reset(void);
 // =============================================================================
 
 esp_err_t wifi_mgr_http_init(void);
+esp_err_t wifi_mgr_http_unregister_handlers(void);
 esp_err_t wifi_mgr_http_deinit(void);
 
 // =============================================================================
@@ -171,6 +250,38 @@ void wifi_mgr_start_connect_sequence(void);
 // AP mode control (called from task)
 void wifi_mgr_start_ap_mode(void);
 void wifi_mgr_stop_ap_mode(void);
+
+// =============================================================================
+// Provisioning Orchestration
+// =============================================================================
+
+// Start all enabled provisioning interfaces (AP + BLE) per config
+void wifi_mgr_start_provisioning(void);
+
+// Stop all provisioning interfaces, transition HTTP per post-prov mode
+void wifi_mgr_stop_provisioning(void);
+
+// =============================================================================
+// BLE Start/Stop (advertising control without full init/deinit)
+// =============================================================================
+
+esp_err_t wifi_mgr_ble_start(void);
+esp_err_t wifi_mgr_ble_stop(void);
+
+// =============================================================================
+// HTTP Handler Registration
+// =============================================================================
+
+// Register/unregister API handlers (scan, networks, connect, etc.)
+esp_err_t wifi_mgr_http_register_api_handlers(void);
+
+// Register/unregister only the provisioning-specific HTTP handlers
+// (captive portal detection, simple page, WebUI routes)
+esp_err_t wifi_mgr_http_register_provisioning_handlers(void);
+esp_err_t wifi_mgr_http_unregister_provisioning_handlers(void);
+
+// Transition HTTP to post-provisioning mode
+void wifi_mgr_http_transition_post_prov(wifi_http_post_prov_mode_t mode);
 
 // =============================================================================
 // esp_bus Handler (esp_wifi_manager_bus.c)

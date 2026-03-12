@@ -107,10 +107,12 @@ void app_main(void)
             .dhcp_start = "192.168.4.2",
             .dhcp_end = "192.168.4.20",
         },
-        .enable_captive_portal = true,
+        // Provisioning: start AP+HTTP when no networks or all fail
+        .provisioning_mode = WIFI_PROV_ON_FAILURE,
+        .stop_provisioning_on_connect = true,
+        .enable_ap = true,
 
         .http = {
-            .enable = true,
             .api_base_path = "/api/wifi",
         },
 
